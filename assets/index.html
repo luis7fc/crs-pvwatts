@@ -84,7 +84,13 @@
     <button class="ghost" onclick="openSettings()">⚙</button>
     <button class="ghost" onclick="logout()">Log out</button>
   </header>
-  <main><div id="lots"></div></main>
+  <main>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input id="search" placeholder="Search job # / lot # / community…" style="flex:1" oninput="applyFilter()">
+      <button class="ghost" onclick="clearSearch()">Clear</button>
+    </div>
+    <div id="lots"></div>
+  </main>
 </div>
 
 <script>
@@ -143,14 +149,27 @@ async function logout(){ try{await api('/api/logout',{forget:false})}catch(e){};
 async function forget(){ try{await api('/api/logout',{forget:true})}catch(e){}; location.reload(); }
 init();
 
+let POOL=[];
 async function refresh(){
-  $('#lots').innerHTML='<div class="hint">Loading pool…</div>';
+  $('#lots').innerHTML='<div class="hint">Loading full pending pool… (a few seconds)</div>';
   try{
     const {lots} = await api('/api/pool');
-    $('#poolcount').textContent = lots.length+' lots';
-    renderLots(lots);
+    POOL = lots;
+    applyFilter();
   }catch(e){ $('#lots').innerHTML='<div class="err">'+e.message+'</div>'; }
 }
+function applyFilter(){
+  const q=($('#search').value||'').trim().toLowerCase();
+  const list = q ? POOL.filter(l =>
+    (l.job||'').toLowerCase().includes(q) ||
+    (l.lot||'').toLowerCase().includes(q) ||
+    (l.lot_addr||'').toLowerCase().includes(q) ||
+    (l.community||'').toLowerCase().includes(q)
+  ) : POOL;
+  $('#poolcount').textContent = q ? (list.length+' of '+POOL.length) : (POOL.length+' lots');
+  renderLots(list);
+}
+function clearSearch(){ $('#search').value=''; applyFilter(); }
 
 function renderLots(lots){
   const box=$('#lots'); box.innerHTML='';

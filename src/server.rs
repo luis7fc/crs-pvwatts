@@ -165,7 +165,7 @@ async fn logout(State(st): State<AppState>, Json(req): Json<LogoutReq>) -> Api {
 async fn pool(State(st): State<AppState>) -> Api {
     let guard = st.session.lock().await;
     let sess = guard.as_ref().ok_or_else(|| anyhow::anyhow!("not logged in"))?;
-    let lots = sess.fetch_pool(1500).await?;
+    let lots = sess.fetch_pool().await?;
     Ok(Json(json!({"ok": true, "lots": lots})))
 }
 

@@ -160,43 +160,61 @@ impl Session {
         Ok(data)
     }
 
-    /// Fetch the selectable lot pool.
+    /// Fetch the FULL selectable lot pool by paging through all lot records.
     /// Predicate: UsrChannel=Integrated AND UsrBuyerInfoReceived set AND
     /// SMConsultationComplete blank AND CrsEstAnnualKwhProductionLot blank/0.
     ///
-    /// Filtered CLIENT-SIDE over a bounded fetch — mirrors the validated probe and
-    /// sidesteps the DataService null/lookup filter-enum traps. TODO: server-side
-    /// filter for full-pool coverage at scale.
-    pub async fn fetch_pool(&self, scan_rows: i64) -> Result<Vec<PoolLot>> {
+    /// Filtered CLIENT-SIDE (the DataService server-side null/lookup filters 500
+    /// or silently no-op — vault-confirmed). DataService caps rowCount, so we page
+    /// with rowsOffset ordered by Id. ~100k lots -> ~12s, ~281 pending.
+    pub async fn fetch_pool(&self) -> Result<Vec<PoolLot>> {
         const COLS: &[&str] = &[
             "Id", "UsrJobNumber", "UsrName", "UsrLotNumberPlusAddress", "UsrZipCode",
             "UsrLot_PlanElevation", "UsrLot_Community", "UsrChannel",
             "UsrBuyerInfoReceived", "SMConsultationComplete", "CrsEstAnnualKwhProductionLot",
         ];
-        let data = self
-            .select(select_payload("UsrLotRecords", COLS, scan_rows, None))
-            .await?;
-        let rows = rows_of(&data); // borrow — no clone of the row vector
+        const CHUNK: i64 = 5000;
+        const BATCH: usize = 6; // pages fetched concurrently per round
 
         let mut pool = Vec::new();
-        for r in rows {
-            let channel_ok = disp(field(r, "UsrChannel")).as_deref() == Some("Integrated");
-            if channel_ok
-                && !blank(field(r, "UsrBuyerInfoReceived"))
-                && blank(field(r, "SMConsultationComplete"))
-                && blank(field(r, "CrsEstAnnualKwhProductionLot"))
-            {
-                pool.push(PoolLot {
-                    lot_id: disp(field(r, "Id")).unwrap_or_default(),
-                    job: disp(field(r, "UsrJobNumber")),
-                    lot: disp(field(r, "UsrName")),
-                    lot_addr: disp(field(r, "UsrLotNumberPlusAddress")),
-                    zip: disp(field(r, "UsrZipCode")),
-                    plan: disp(field(r, "UsrLot_PlanElevation")),
-                    community: disp(field(r, "UsrLot_Community")),
-                    community_id: guid(field(r, "UsrLot_Community")),
-                    buyer_info: disp(field(r, "UsrBuyerInfoReceived")),
-                });
+        let mut base: i64 = 0;
+        loop {
+            // Fire BATCH page requests at once (each page is independent — offset +
+            // Id order — so concurrency is safe on the one shared session).
+            let futs = (0..BATCH).map(|i| self.select(pool_page_payload(COLS, CHUNK, base + (i as i64) * CHUNK)));
+            let results = futures::future::join_all(futs).await;
+
+            let mut done = false;
+            for res in results {
+                let data = res?;
+                let rows = rows_of(&data);
+                if rows.len() < CHUNK as usize {
+                    done = true; // this page is the last
+                }
+                for r in rows {
+                    let channel_ok = disp(field(r, "UsrChannel")).as_deref() == Some("Integrated");
+                    if channel_ok
+                        && !blank(field(r, "UsrBuyerInfoReceived"))
+                        && blank(field(r, "SMConsultationComplete"))
+                        && blank(field(r, "CrsEstAnnualKwhProductionLot"))
+                    {
+                        pool.push(PoolLot {
+                            lot_id: disp(field(r, "Id")).unwrap_or_default(),
+                            job: disp(field(r, "UsrJobNumber")),
+                            lot: disp(field(r, "UsrName")),
+                            lot_addr: disp(field(r, "UsrLotNumberPlusAddress")),
+                            zip: disp(field(r, "UsrZipCode")),
+                            plan: disp(field(r, "UsrLot_PlanElevation")),
+                            community: disp(field(r, "UsrLot_Community")),
+                            community_id: guid(field(r, "UsrLot_Community")),
+                            buyer_info: disp(field(r, "UsrBuyerInfoReceived")),
+                        });
+                    }
+                }
+            }
+            base += (BATCH as i64) * CHUNK;
+            if done || base > 500_000 {
+                break;
             }
         }
         Ok(pool)
@@ -363,6 +381,31 @@ fn select_payload(root: &str, cols: &[&str], row_count: i64, filter: Option<Valu
         q["filters"] = f;
     }
     q
+}
+
+/// Paginated SelectQuery ordered by Id (stable paging past the rowCount cap).
+fn pool_page_payload(cols: &[&str], row_count: i64, offset: i64) -> Value {
+    let mut items = serde_json::Map::new();
+    for c in cols {
+        let mut expr = json!({ "expression": { "expressionType": 0, "columnPath": c } });
+        if *c == "Id" {
+            expr["orderDirection"] = json!(1); // ascending — consistent page order
+            expr["orderPosition"] = json!(0);
+        }
+        items.insert((*c).to_string(), expr);
+    }
+    json!({
+        "rootSchemaName": "UsrLotRecords",
+        "operationType": 0,
+        "includeProcessExecutionData": false,
+        "columns": { "items": items },
+        "isDistinct": false,
+        "rowCount": row_count,
+        "rowsOffset": offset,
+        "isPageable": true,
+        "allColumns": false,
+        "useLocalization": true,
+    })
 }
 
 /// Single-column equality filter. `dvt` is the dataValueType proven for that column.
