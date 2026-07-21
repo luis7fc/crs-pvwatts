@@ -27,6 +27,7 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/api/status", get(status))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/pool", get(pool))
@@ -56,26 +57,49 @@ impl<E: Into<anyhow::Error>> From<E> for AppError {
 type Api = Result<Json<Value>, AppError>;
 
 // ── handlers ────────────────────────────────────────────────────────────────
+/// Startup state for the SPA: are we already logged in (auto-login), and is
+/// there a saved username to prefill the form.
+async fn status(State(st): State<AppState>) -> Json<Value> {
+    let logged_in = st.session.lock().await.is_some();
+    let saved_user = std::env::var("CREATIO_USERNAME").ok().filter(|s| !s.is_empty());
+    Json(json!({"ok": true, "logged_in": logged_in, "saved_user": saved_user}))
+}
+
 #[derive(Deserialize)]
 struct LoginReq {
     username: String,
     password: String,
+    #[serde(default)]
+    remember: Option<bool>,
 }
 
 async fn login(State(st): State<AppState>, Json(req): Json<LoginReq>) -> Api {
     let cfg = creatio::CreatioConfig {
         base_url: st.base_url.clone(),
-        username: req.username,
-        password: req.password,
+        username: req.username.clone(),
+        password: req.password.clone(),
     };
     let sess = creatio::Session::login(&cfg).await?;
     *st.session.lock().await = Some(sess);
+    // Remember on this PC (default on) — plaintext creds to pvwatts.env (0600).
+    if req.remember != Some(false) {
+        let _ = crate::config::save_creatio_creds(&req.username, &req.password);
+    }
     Ok(Json(json!({"ok": true})))
 }
 
-async fn logout(State(st): State<AppState>) -> Api {
+#[derive(Deserialize)]
+struct LogoutReq {
+    #[serde(default)]
+    forget: bool,
+}
+
+async fn logout(State(st): State<AppState>, Json(req): Json<LogoutReq>) -> Api {
     if let Some(s) = st.session.lock().await.take() {
         s.logout().await;
+    }
+    if req.forget {
+        let _ = crate::config::forget_creatio_creds();
     }
     Ok(Json(json!({"ok": true})))
 }

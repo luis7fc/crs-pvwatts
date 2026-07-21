@@ -78,10 +78,15 @@ pub struct ParseResult {
 }
 
 impl Sidecar {
-    /// Dev: SIDECAR_BASE_URL (default prod) + N8N_TOOLS_API_KEY from env.
+    /// Sidecar key resolution: runtime env / pvwatts.env (N8N_TOOLS_API_KEY),
+    /// else the value baked at build time (CI sets it as a secret), else error.
+    /// Users never enter this — it's the tool's shared key, not a per-user cred.
     pub fn from_env() -> Result<Self> {
         let base = std::env::var("SIDECAR_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE.to_string());
-        let api_key = std::env::var("N8N_TOOLS_API_KEY").context("N8N_TOOLS_API_KEY not set")?;
+        let api_key = std::env::var("N8N_TOOLS_API_KEY")
+            .ok()
+            .or_else(|| option_env!("N8N_TOOLS_API_KEY").map(str::to_string))
+            .context("N8N_TOOLS_API_KEY not set (env/pvwatts.env, or bake at build)")?;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(90))
             .build()?;

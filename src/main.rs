@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 mod calc;
+mod config;
 mod creatio;
 mod pdf;
 mod server;
@@ -62,6 +63,20 @@ async fn main() -> Result<()> {
         session: Arc::new(Mutex::new(None)),
         sidecar,
     };
+    // Auto-login from saved credentials (pvwatts.env) so it's one-time per PC.
+    if let (Ok(u), Ok(p)) = (std::env::var("CREATIO_USERNAME"), std::env::var("CREATIO_PASSWORD")) {
+        if !u.is_empty() && !p.is_empty() {
+            let cfg = creatio::CreatioConfig { base_url: state.base_url.clone(), username: u, password: p };
+            match creatio::Session::login(&cfg).await {
+                Ok(s) => {
+                    *state.session.lock().await = Some(s);
+                    println!("auto-logged in from saved credentials");
+                }
+                Err(e) => eprintln!("saved credentials didn't work ({e}) — showing login"),
+            }
+        }
+    }
+
     let app = server::router(state);
 
     let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8787);

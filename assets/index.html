@@ -53,13 +53,14 @@
 </style>
 </head>
 <body>
-<div id="login" class="card">
+<div id="login" class="card" style="display:none">
   <h2>☀ PVWatts Tool — sign in</h2>
   <div class="row"><label>Creatio username</label><input id="u" autocomplete="username"></div>
   <div class="row"><label>Creatio password</label><input id="p" type="password" autocomplete="current-password"></div>
+  <label style="display:flex;gap:8px;align-items:center;margin-bottom:12px;color:var(--ink)"><input type="checkbox" id="remember" checked> Remember on this PC (sign in once)</label>
   <button class="primary" style="width:100%" onclick="login()">Sign in</button>
   <div id="loginerr" class="err"></div>
-  <div class="hint" style="margin-top:10px">Uses your own Creatio credentials. Nothing stored.</div>
+  <div class="hint" style="margin-top:10px">Your own Creatio credentials. With "remember" on, they're saved locally on this PC in plaintext so you skip sign-in next launch. <a href="#" onclick="forget();return false" style="color:var(--accent)">Forget saved login</a></div>
 </div>
 
 <div id="app" style="display:none">
@@ -84,16 +85,29 @@ const api = async (path, body) => {
 };
 const S = {}; // per-lot ui state keyed by lot_id
 
+function enterApp(){
+  $('#login').style.display='none'; $('#app').style.display='';
+  $('#tenant').textContent = location.host;
+  refresh();
+}
+async function init(){
+  try{
+    const s = await api('/api/status');
+    if(s.logged_in){ enterApp(); return; }
+    if(s.saved_user){ $('#u').value = s.saved_user; }
+  }catch(e){}
+  $('#login').style.display='';
+}
 async function login(){
   $('#loginerr').textContent='';
   try{
-    await api('/api/login',{username:$('#u').value, password:$('#p').value});
-    $('#login').style.display='none'; $('#app').style.display='';
-    $('#tenant').textContent = location.host;
-    await refresh();
+    await api('/api/login',{username:$('#u').value, password:$('#p').value, remember: $('#remember').checked});
+    enterApp();
   }catch(e){ $('#loginerr').textContent = e.message; }
 }
-async function logout(){ try{await api('/api/logout',{})}catch(e){}; location.reload(); }
+async function logout(){ try{await api('/api/logout',{forget:false})}catch(e){}; location.reload(); }
+async function forget(){ try{await api('/api/logout',{forget:true})}catch(e){}; location.reload(); }
+init();
 
 async function refresh(){
   $('#lots').innerHTML='<div class="hint">Loading pool…</div>';
