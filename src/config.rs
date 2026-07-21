@@ -55,6 +55,17 @@ fn upsert(pairs: &mut Vec<(String, String)>, key: &str, val: &str) {
     }
 }
 
+/// Merge arbitrary KEY=VALUE settings into pvwatts.env, preserving other keys.
+pub fn save_kv(entries: &[(&str, &str)]) -> Result<PathBuf> {
+    let path = config_path();
+    let mut pairs = read_pairs(&path);
+    for (k, v) in entries {
+        upsert(&mut pairs, k, v);
+    }
+    write_pairs(&path, &pairs)?;
+    Ok(path)
+}
+
 /// Save (merge) the Creatio credentials, preserving other keys (e.g. the sidecar key).
 pub fn save_creatio_creds(username: &str, password: &str) -> Result<PathBuf> {
     let path = config_path();

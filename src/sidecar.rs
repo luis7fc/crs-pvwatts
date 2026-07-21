@@ -15,6 +15,7 @@ use serde_json::json;
 
 const DEFAULT_BASE: &str = "https://crs-n8n-tools-api.onrender.com";
 
+#[derive(Clone)]
 pub struct Sidecar {
     client: reqwest::Client,
     base: String,
@@ -78,6 +79,13 @@ pub struct ParseResult {
 }
 
 impl Sidecar {
+    pub fn new(base: String, api_key: String) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(90))
+            .build()?;
+        Ok(Self { client, base, api_key })
+    }
+
     /// Sidecar key resolution: runtime env / pvwatts.env (N8N_TOOLS_API_KEY),
     /// else the value baked at build time (CI sets it as a secret), else error.
     /// Users never enter this — it's the tool's shared key, not a per-user cred.
@@ -87,10 +95,12 @@ impl Sidecar {
             .ok()
             .or_else(|| option_env!("N8N_TOOLS_API_KEY").map(str::to_string))
             .context("N8N_TOOLS_API_KEY not set (env/pvwatts.env, or bake at build)")?;
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(90))
-            .build()?;
-        Ok(Self { client, base, api_key })
+        Self::new(base, api_key)
+    }
+
+    /// The sidecar base URL (for rebuilds after a settings change).
+    pub fn base_url(&self) -> &str {
+        &self.base
     }
 
     /// Run PVWatts for a lot's arrays via the sidecar. Returns per-array + summed kWh.

@@ -63,6 +63,17 @@
   <div class="hint" style="margin-top:10px">Your own Creatio credentials. With "remember" on, they're saved locally on this PC in plaintext so you skip sign-in next launch. <a href="#" onclick="forget();return false" style="color:var(--accent)">Forget saved login</a></div>
 </div>
 
+<div id="settings" class="card" style="display:none">
+  <h2>⚙ Settings</h2>
+  <div class="row"><label>Sidecar key</label><input id="set-key" type="password"></div>
+  <div class="row"><label>Sidecar URL</label><input id="set-sidecar"></div>
+  <div class="row"><label>Creatio base URL</label><input id="set-creatio"></div>
+  <div class="row"><label>PDF output root (I: drive)</label><input id="set-root"></div>
+  <button class="primary" style="width:100%" onclick="saveSettings()">Save</button>
+  <div id="seterr" class="err"></div>
+  <div class="hint" style="margin-top:10px">Saved on this PC (<code>pvwatts.env</code>). Leave the key blank to keep the current one. <a href="#" onclick="showLoginFromSettings();return false" style="color:var(--accent)">back to sign in</a></div>
+</div>
+
 <div id="app" style="display:none">
   <header>
     <h1>☀ PVWatts Generation Tool</h1>
@@ -70,6 +81,7 @@
     <div class="sp"></div>
     <span class="chip" id="poolcount">—</span>
     <button class="ghost" onclick="refresh()">↻ Refresh</button>
+    <button class="ghost" onclick="openSettings()">⚙</button>
     <button class="ghost" onclick="logout()">Log out</button>
   </header>
   <main><div id="lots"></div></main>
@@ -86,18 +98,40 @@ const api = async (path, body) => {
 const S = {}; // per-lot ui state keyed by lot_id
 
 function enterApp(){
-  $('#login').style.display='none'; $('#app').style.display='';
+  hideCards(); $('#app').style.display='';
   $('#tenant').textContent = location.host;
   refresh();
 }
+function hideCards(){ $('#login').style.display='none'; $('#settings').style.display='none'; $('#app').style.display='none'; }
 async function init(){
   try{
     const s = await api('/api/status');
+    if(!s.configured){ await showSettings(); return; }        // first-run setup
     if(s.logged_in){ enterApp(); return; }
     if(s.saved_user){ $('#u').value = s.saved_user; }
   }catch(e){}
-  $('#login').style.display='';
+  hideCards(); $('#login').style.display='';
 }
+async function showSettings(){
+  hideCards();
+  try{
+    const s = await api('/api/settings');
+    $('#set-sidecar').value = s.sidecar_url||'';
+    $('#set-creatio').value = s.creatio_base_url||'';
+    $('#set-root').value = s.output_root||'';
+    $('#set-key').value=''; $('#set-key').placeholder = s.key_set ? '•••••• set — blank keeps it' : 'required';
+  }catch(e){}
+  $('#settings').style.display='';
+}
+function openSettings(){ showSettings(); }
+async function saveSettings(){
+  $('#seterr').textContent='';
+  try{
+    await api('/api/settings',{sidecar_url:$('#set-sidecar').value, sidecar_key:$('#set-key').value, creatio_base_url:$('#set-creatio').value, output_root:$('#set-root').value});
+    await init();
+  }catch(e){ $('#seterr').textContent = e.message; }
+}
+function showLoginFromSettings(){ hideCards(); $('#login').style.display=''; }
 async function login(){
   $('#loginerr').textContent='';
   try{

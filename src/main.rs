@@ -54,19 +54,33 @@ fn load_local_env() {
 #[tokio::main]
 async fn main() -> Result<()> {
     load_local_env();
-    let base_url = std::env::var("CREATIO_BASE_URL")
+    let creatio_base = std::env::var("CREATIO_BASE_URL")
         .unwrap_or_else(|_| "https://citadelrs.creatio.com".to_string());
-    let sidecar = Arc::new(sidecar::Sidecar::from_env()?);
+    let sidecar_base = std::env::var("SIDECAR_BASE_URL")
+        .unwrap_or_else(|_| "https://crs-n8n-tools-api.onrender.com".to_string());
+    let output_root = std::env::var("PVWATTS_OUTPUT_ROOT")
+        .unwrap_or_else(|_| pdf::DEFAULT_ROOT.to_string());
+
+    // Sidecar is optional at startup — if the key isn't set yet, the UI's
+    // Settings screen collects it and rebuilds the client.
+    let sidecar = sidecar::Sidecar::from_env().ok();
+    if sidecar.is_none() {
+        eprintln!("sidecar key not set — configure it in the browser Settings screen");
+    }
 
     let state = server::AppState {
-        base_url,
+        cfg: Arc::new(Mutex::new(server::AppConfig {
+            creatio_base_url: creatio_base.clone(),
+            sidecar_base_url: sidecar_base,
+            output_root,
+        })),
         session: Arc::new(Mutex::new(None)),
-        sidecar,
+        sidecar: Arc::new(Mutex::new(sidecar)),
     };
     // Auto-login from saved credentials (pvwatts.env) so it's one-time per PC.
     if let (Ok(u), Ok(p)) = (std::env::var("CREATIO_USERNAME"), std::env::var("CREATIO_PASSWORD")) {
         if !u.is_empty() && !p.is_empty() {
-            let cfg = creatio::CreatioConfig { base_url: state.base_url.clone(), username: u, password: p };
+            let cfg = creatio::CreatioConfig { base_url: creatio_base.clone(), username: u, password: p };
             match creatio::Session::login(&cfg).await {
                 Ok(s) => {
                     *state.session.lock().await = Some(s);
