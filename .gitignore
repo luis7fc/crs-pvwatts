@@ -1,0 +1,4 @@
+/target
+# runtime config holds the sidecar key — never commit it
+pvwatts.env
+*.pdf

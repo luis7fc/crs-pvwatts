@@ -1,0 +1,24 @@
+app_input,pvwatts_param,source_type,default_or_rule,creatio_entity,creatio_field,sample_value,notes
+Creatio base URL,n/a,Confirmed,,,,https://citadelrs.creatio.com,from .env CREATIO_BASE_URL
+Auth type,n/a,Confirmed,Forms auth (AuthService.svc/Login),,,BPMCSRF cookie,probe logged in + out clean
+Requires VPN/corp network,n/a,NeedsLuis,,,,,reachable from Luis Mac w/o VPN — confirm coworker PCs same
+Lot entity,n/a,Confirmed,,UsrLotRecords,Id / UsrJobNumber / UsrName,job=11576-012 lot=425,UsrName = lot number
+Zip code,address,Confirmed,,UsrLotRecords,UsrZipCode,95365,SOMETIMES EMPTY -> flag lot; PVWatts needs location
+System entity (per lot),n/a,Confirmed,linked by SMUsrLotRecords = lot Id,SMSystemDetailObject,SMUsrLotRecords,1 row per lot,multi-array NOT stored here
+Panel model string,n/a,Confirmed,parse last int in 250-800 band,SMSystemDetailObject,SMSolarPanelModule,JA Solar JAM54S31-395/MR,parser validated vs real data
+Panel qty (LOT TOTAL),n/a,Confirmed,team splits across arrays in UI,SMSystemDetailObject,SMSolarPanelQty,12,total for lot; UI allocates per array
+System size kW DC,n/a,Confirmed,reconcile vs sum of array kW,SMSystemDetailObject,SMSystemSizeDC,4.74,qty*wattage/1000 == this exactly
+Inverter model,n/a,Confirmed,lookup -> Product GUID,SMSystemDetailObject,SMInverter,Enphase IQ8+ (Plus),GUID joins to Product
+Inverter efficiency (%),inv_eff,Confirmed,join SMInverter GUID -> Product,Product,SMInverterEfficiency,97.0,Enphase IQ8+ -> 97 (matches rules doc)
+Lot pool filter,n/a,NeedsLuis,e.g. Buyer Info Received date,UsrLotRecords,???,,which lots appear in the selectable pool
+Panel count per array,n/a,User-entered,team enters in UI,,,,per array (subset of the lot total)
+Tilt (deg),tilt,User-entered,team enters in UI,,,,per array (not in Creatio)
+Azimuth (deg),azimuth,User-entered,team enters in UI,,,,per array (not in Creatio)
+Array count per lot,n/a,User-entered,team enters in UI,,,,how many arrays to loop
+System capacity (kW DC),system_capacity,Derived,panel_count * wattage / 1000,,,,computed per array
+Module type,module_type,Default,1 = Premium,,,,from rules doc
+Array type,array_type,Default,1 = Fixed roof mount,,,,from rules doc
+System losses (%),losses,Default,14.1,,,,from rules doc
+DC to AC ratio,dc_ac_ratio,Default,1.2,,,,from rules doc
+Ground coverage ratio,gcr,Default,0.4,,,,from rules doc
+Monthly irradiance/soiling loss (%),soiling,Default,3 (all 12 months),,,,from rules doc

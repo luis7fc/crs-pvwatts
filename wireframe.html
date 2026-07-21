@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PVWatts Tool — Wireframe</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#161d2b; --panel2:#1d2636; --line:#2a3448;
+    --ink:#e7edf7; --dim:#8ea0bd; --accent:#4f9cf9; --good:#3ecf8e; --warn:#f7b955; --bad:#f26d6d;
+    --chip:#233049;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
+  header .sp{flex:1}
+  .chip{background:var(--chip);border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;color:var(--dim)}
+  .banner{background:#3a2d12;color:var(--warn);border-bottom:1px solid #5a4415;padding:6px 16px;font-size:12px;text-align:center}
+  main{max-width:960px;margin:0 auto;padding:18px 16px 120px}
+  .bar{display:flex;align-items:center;gap:10px;margin:6px 0 14px}
+  .bar h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin:0}
+  button{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:650}
+  button.ghost{background:transparent}
+  .lot{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
+  .lot.flagged{opacity:.75;border-color:#5a3b1a}
+  .lothead{display:flex;align-items:center;gap:12px;padding:11px 14px;cursor:pointer}
+  .lothead:hover{background:var(--panel2)}
+  .lothead input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+  .job{font-weight:650;font-variant-numeric:tabular-nums}
+  .addr{color:var(--dim)}
+  .meta{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--dim)}
+  .tag{background:var(--chip);border-radius:6px;padding:2px 7px}
+  .tag.warn{background:#3a2d12;color:var(--warn)}
+  .tag.good{background:#14392c;color:var(--good)}
+  .caret{transition:transform .15s;color:var(--dim)}
+  .lot.open .caret{transform:rotate(90deg)}
+  .arrays{display:none;padding:4px 14px 14px 42px;border-top:1px solid var(--line);background:var(--panel2)}
+  .lot.open .arrays{display:block}
+  table.arr{width:100%;border-collapse:collapse;margin-top:6px}
+  table.arr th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);text-align:left;padding:4px 6px;font-weight:600}
+  table.arr td{padding:3px 6px;border-top:1px solid var(--line)}
+  table.arr input{width:70px;background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--ink);padding:5px 7px;font:inherit;text-align:right}
+  .reconcile{margin-top:8px;font-size:12px;color:var(--dim)}
+  .reconcile b{color:var(--ink)}
+  .reconcile.bad b{color:var(--warn)}
+  .runbar{position:fixed;bottom:0;left:0;right:0;background:var(--panel);border-top:1px solid var(--line);padding:12px 16px;display:flex;align-items:center;gap:14px;justify-content:center}
+  .results{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:8px}
+  .rrow{display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line);font-size:13px}
+  .rrow:first-of-type{border-top:none}
+  .path{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--dim);word-break:break-all}
+  .kwh{font-variant-numeric:tabular-nums;font-weight:650}
+  small.hint{color:var(--dim)}
+  .addbtn{margin-top:6px;font-size:12px;padding:4px 9px}
+</style>
+</head>
+<body>
+<header>
+  <h1>☀ PVWatts Generation Tool</h1>
+  <span class="chip">citadelrs.creatio.com</span>
+  <div class="sp"></div>
+  <span class="chip">logged in: lmoreno@…</span>
+  <button class="ghost" style="font-size:12px">Log out</button>
+</header>
+<div class="banner">WIREFRAME — real pool lots from probe; PVWatts kWh &amp; some system specs are mocked for layout</div>
+
+<main>
+  <div class="bar">
+    <h2>Lot pool</h2>
+    <span class="chip" id="poolcount">6 lots · buyer-info received, not yet consulted</span>
+    <div class="sp" style="flex:1"></div>
+    <button class="ghost">↻ Refresh pool</button>
+  </div>
+
+  <div id="lots"></div>
+
+  <div class="bar" style="margin-top:22px"><h2>Results</h2></div>
+  <div id="results" class="results"><small class="hint">Select lots above and Run PVWatts to see per-array kWh, the PDF path, and writeback status.</small></div>
+</main>
+
+<div class="runbar">
+  <span id="selcount" class="chip">0 selected</span>
+  <button class="primary" onclick="run()">▶ Run PVWatts on selected</button>
+</div>
+
+<script>
+// Real pool lots from probe 2026-07-20 (panel model/qty mocked where not fetched).
+const LOTS = [
+  {job:"71009-028", lotaddr:"33 - 3196 Scoon Place", zip:"93274", builder:"Bonadelle Homes", jobname:"Mission Oaks", inv:"Enphase IQ8+", eff:97, model:"JA Solar JAM54S31-395/MR", w:395, qty:12},
+  {job:"70979-005", lotaddr:"117 - 3044 Grindstone Drive", zip:"95648", builder:"Century Communities", jobname:"Turkey Creek", inv:"Enphase IQ8+", eff:97, model:"LONGi LR4-60HPB-350M", w:350, qty:9},
+  {job:"70979-005", lotaddr:"123 - 3116 Grindstone Drive", zip:"95648", builder:"Century Communities", jobname:"Turkey Creek", inv:"Enphase IQ8+", eff:97, model:"LONGi LR4-60HPB-350M", w:350, qty:16},
+  {job:"—", lotaddr:"24 - 13302 Almondwood Circle", zip:"", builder:"—", jobname:"Palm Crossing Tract 7093", inv:"Enphase IQ8+", eff:97, model:"REC320NP", w:320, qty:10, flagged:true},
+  {job:"71247-005", lotaddr:"3043 - 3075 Hailey Street", zip:"93444", builder:"Trumark Homes", jobname:"Monarch Dunes Resorts", inv:"Tesla", eff:97.5, model:"JA Solar JAM54S31-395/MR", w:395, qty:14},
+  {job:"71247-007", lotaddr:"3061 - 1970 Hailey Street", zip:"93444", builder:"Trumark Homes", jobname:"Monarch Dunes Resorts", inv:"Tesla", eff:97.5, model:"LONGi LR4-60HPB-360M", w:360, qty:9},
+];
+
+const state = LOTS.map((l,i)=>({...l, sel:false, arrays:[{panels:l.qty, tilt:20, az:180}]}));
+
+function kw(a,w){return (a.panels*w/1000)}
+function lotDC(l){return l.arrays.reduce((s,a)=>s+kw(a,l.w),0)}
+function panelSum(l){return l.arrays.reduce((s,a)=>s+ (+a.panels||0),0)}
+
+function render(){
+  const box = document.getElementById('lots'); box.innerHTML='';
+  state.forEach((l,i)=>{
+    const open = l._open;
+    const el = document.createElement('div');
+    el.className = 'lot'+(l.flagged?' flagged':'')+(open?' open':'');
+    const reconOk = Math.abs(panelSum(l)-l.qty)===0;
+    el.innerHTML = `
+      <div class="lothead" onclick="toggle(${i},event)">
+        <input type="checkbox" ${l.sel?'checked':''} ${l.flagged?'disabled':''} onclick="sel(${i},event)">
+        <span class="caret">▶</span>
+        <span class="job">${l.job}</span>
+        <span class="addr">${l.lotaddr}</span>
+        <span class="meta">
+          ${l.flagged?`<span class="tag warn">⚠ NO ZIP — flagged</span>`:`<span class="tag">zip ${l.zip}</span>`}
+          <span class="tag">${l.inv} · ${l.eff}%</span>
+          <span class="tag">${l.qty} panels</span>
+        </span>
+      </div>
+      <div class="arrays">
+        <small class="hint">${l.model} · ${l.w}W · Creatio kW_DC ${(l.qty*l.w/1000).toFixed(2)}</small>
+        <table class="arr">
+          <thead><tr><th>Array</th><th>Panels</th><th>Tilt°</th><th>Azimuth°</th><th>kW DC</th></tr></thead>
+          <tbody>
+          ${l.arrays.map((a,j)=>`<tr>
+            <td>Array ${j+1}</td>
+            <td><input type="number" value="${a.panels}" onchange="upd(${i},${j},'panels',this.value)"></td>
+            <td><input type="number" value="${a.tilt}" onchange="upd(${i},${j},'tilt',this.value)"></td>
+            <td><input type="number" value="${a.az}" onchange="upd(${i},${j},'az',this.value)"></td>
+            <td class="kwh">${kw(a,l.w).toFixed(2)}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table>
+        <button class="ghost addbtn" onclick="addArr(${i})">+ add array</button>
+        <div class="reconcile ${reconOk?'':'bad'}">Array panels <b>${panelSum(l)}</b> / lot total <b>${l.qty}</b> ${reconOk?'✓ reconciled':'⚠ mismatch'} · total <b>${lotDC(l).toFixed(2)} kW DC</b></div>
+      </div>`;
+    box.appendChild(el);
+  });
+  const n = state.filter(s=>s.sel).length;
+  document.getElementById('selcount').textContent = n+' selected';
+}
+function toggle(i,e){ if(e.target.tagName==='INPUT')return; state[i]._open=!state[i]._open; render(); }
+function sel(i,e){ e.stopPropagation(); state[i].sel=!state[i].sel; render(); }
+function upd(i,j,k,v){ state[i].arrays[j][k]= +v; render(); }
+function addArr(i){ const l=state[i]; const used=panelSum(l); l.arrays.push({panels:Math.max(l.qty-used,0),tilt:20,az:270}); render(); }
+function run(){
+  const chosen = state.filter(s=>s.sel && !s.flagged);
+  const out = document.getElementById('results');
+  if(!chosen.length){ out.innerHTML='<small class="hint">No runnable lots selected (flagged lots are skipped).</small>'; return; }
+  out.innerHTML = chosen.map(l=>{
+    const rows = l.arrays.map((a,j)=>{
+      const annual = Math.round(kw(a,l.w)*1600*(l.eff/97)); // mocked CA yield
+      return `<div class="rrow"><span>Array ${j+1} · ${kw(a,l.w).toFixed(2)} kW · tilt ${a.tilt} az ${a.az}</span><span class="kwh">${annual.toLocaleString()} kWh</span></div>`;
+    });
+    const total = l.arrays.reduce((s,a)=>s+Math.round(kw(a,l.w)*1600*(l.eff/97)),0);
+    const path = `I:\\Solar\\1- New Construction\\Production\\${l.builder}\\${l.jobname}\\Consultations\\${l.lotaddr}\\PV_WATTS_${l.lotaddr}.pdf`;
+    return `<div style="margin-bottom:16px">
+      <div style="font-weight:650;margin-bottom:2px">${l.job} · ${l.lotaddr}</div>
+      ${rows.join('')}
+      <div class="rrow"><span><b>Lot total → CrsEstAnnualKwhProductionLot</b></span><span class="kwh">${total.toLocaleString()} kWh</span></div>
+      <div class="rrow"><span class="path">${path}</span></div>
+      <div class="rrow"><span><span class="tag good">PDF written</span> <span class="tag good">Creatio updated</span></span><span></span></div>
+    </div>`;
+  }).join('');
+}
+render();
+</script>
+</body>
+</html>

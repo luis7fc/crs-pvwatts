@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PVWatts Generation Tool</title>
+<style>
+  :root{--bg:#0f1420;--panel:#161d2b;--panel2:#1d2636;--line:#2a3448;--ink:#e7edf7;--dim:#8ea0bd;--accent:#4f9cf9;--good:#3ecf8e;--warn:#f7b955;--bad:#f26d6d;--chip:#233049}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  header h1{font-size:15px;margin:0;font-weight:650}
+  .sp{flex:1}
+  .chip{background:var(--chip);border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px;color:var(--dim)}
+  main{max-width:1000px;margin:0 auto;padding:18px 16px 130px}
+  button{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 12px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#06101f;font-weight:650}
+  button.ghost{background:transparent}
+  input,select{background:var(--bg);border:1px solid var(--line);border-radius:6px;color:var(--ink);padding:6px 8px;font:inherit}
+  input.num{width:74px;text-align:right}
+  label{color:var(--dim);font-size:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px;max-width:380px;margin:60px auto}
+  .card h2{margin:0 0 14px}
+  .row{display:flex;flex-direction:column;gap:5px;margin-bottom:12px}
+  .lot{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
+  .lot.flagged{opacity:.7;border-color:#5a3b1a}
+  .lothead{display:flex;align-items:center;gap:12px;padding:11px 14px;cursor:pointer}
+  .lothead:hover{background:var(--panel2)}
+  .job{font-weight:650;font-variant-numeric:tabular-nums}
+  .addr{color:var(--dim)}
+  .meta{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:12px;color:var(--dim);flex-wrap:wrap;justify-content:flex-end}
+  .tag{background:var(--chip);border-radius:6px;padding:2px 7px}
+  .tag.warn{background:#3a2d12;color:var(--warn)}
+  .tag.good{background:#14392c;color:var(--good)}
+  .body{display:none;padding:6px 14px 16px 14px;border-top:1px solid var(--line);background:var(--panel2)}
+  .lot.open .body{display:block}
+  table.arr{width:100%;border-collapse:collapse;margin-top:8px}
+  table.arr th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);text-align:left;padding:4px 6px}
+  table.arr td{padding:3px 6px;border-top:1px solid var(--line)}
+  .recon{margin-top:8px;font-size:12px;color:var(--dim)}
+  .recon.bad{color:var(--warn)}
+  pre.block{white-space:pre-wrap;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12px;max-height:220px;overflow:auto;margin:8px 0}
+  .opt{display:inline-block;margin:3px;padding:5px 9px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:12px}
+  .opt.sel{border-color:var(--accent);background:#12233c}
+  .results{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px}
+  .rrow{display:flex;justify-content:space-between;padding:4px 0;font-size:13px}
+  .kwh{font-variant-numeric:tabular-nums;font-weight:650}
+  .path{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--dim);word-break:break-all}
+  .err{color:var(--bad);font-size:12px;margin-top:6px}
+  .hint{color:var(--dim);font-size:12px}
+  .runbar{position:fixed;bottom:0;left:0;right:0;background:var(--panel);border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:12px;justify-content:center;align-items:center}
+</style>
+</head>
+<body>
+<div id="login" class="card">
+  <h2>☀ PVWatts Tool — sign in</h2>
+  <div class="row"><label>Creatio username</label><input id="u" autocomplete="username"></div>
+  <div class="row"><label>Creatio password</label><input id="p" type="password" autocomplete="current-password"></div>
+  <button class="primary" style="width:100%" onclick="login()">Sign in</button>
+  <div id="loginerr" class="err"></div>
+  <div class="hint" style="margin-top:10px">Uses your own Creatio credentials. Nothing stored.</div>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <h1>☀ PVWatts Generation Tool</h1>
+    <span class="chip" id="tenant"></span>
+    <div class="sp"></div>
+    <span class="chip" id="poolcount">—</span>
+    <button class="ghost" onclick="refresh()">↻ Refresh</button>
+    <button class="ghost" onclick="logout()">Log out</button>
+  </header>
+  <main><div id="lots"></div></main>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = async (path, body) => {
+  const r = await fetch(path, {method: body===undefined?'GET':'POST', headers:{'content-type':'application/json'}, body: body===undefined?undefined:JSON.stringify(body)});
+  const j = await r.json().catch(()=>({ok:false,error:'bad response'}));
+  if(!r.ok || j.ok===false) throw new Error(j.error || j.detail || ('HTTP '+r.status));
+  return j;
+};
+const S = {}; // per-lot ui state keyed by lot_id
+
+async function login(){
+  $('#loginerr').textContent='';
+  try{
+    await api('/api/login',{username:$('#u').value, password:$('#p').value});
+    $('#login').style.display='none'; $('#app').style.display='';
+    $('#tenant').textContent = location.host;
+    await refresh();
+  }catch(e){ $('#loginerr').textContent = e.message; }
+}
+async function logout(){ try{await api('/api/logout',{})}catch(e){}; location.reload(); }
+
+async function refresh(){
+  $('#lots').innerHTML='<div class="hint">Loading pool…</div>';
+  try{
+    const {lots} = await api('/api/pool');
+    $('#poolcount').textContent = lots.length+' lots';
+    renderLots(lots);
+  }catch(e){ $('#lots').innerHTML='<div class="err">'+e.message+'</div>'; }
+}
+
+function renderLots(lots){
+  const box=$('#lots'); box.innerHTML='';
+  lots.forEach(lot=>{
+    S[lot.lot_id] = S[lot.lot_id] || {lot, bundle:null, arrays:null, mode:null, variant:null, pv:null};
+    const flagged = !lot.zip;
+    const el=document.createElement('div');
+    el.className='lot'+(flagged?' flagged':'');
+    el.id='lot-'+lot.lot_id;
+    el.innerHTML=`
+      <div class="lothead" onclick="toggle('${lot.lot_id}')">
+        <span class="job">${lot.job||'—'} · ${lot.lot||'?'}</span>
+        <span class="addr">${lot.lot_addr||''}</span>
+        <span class="meta">
+          ${flagged?'<span class="tag warn">⚠ NO ZIP</span>':'<span class="tag">zip '+lot.zip+'</span>'}
+          <span class="tag">${lot.community||''}</span>
+          ${lot.plan?'<span class="tag">plan '+lot.plan+'</span>':''}
+        </span>
+      </div>
+      <div class="body" id="body-${lot.lot_id}"></div>`;
+    box.appendChild(el);
+  });
+}
+
+async function toggle(id){
+  const el=$('#lot-'+id); const open=el.classList.toggle('open');
+  if(open && !S[id].bundle) await loadBundle(id);
+}
+
+async function loadBundle(id){
+  const body=$('#body-'+id); body.innerHTML='<div class="hint">Loading system…</div>';
+  try{
+    const {bundle} = await api('/api/bundle', S[id].lot);
+    S[id].bundle=bundle;
+    if(bundle.system){ S[id].mode='normal'; initNormal(id); }
+    else { S[id].mode='options'; await initOptions(id); }
+  }catch(e){ body.innerHTML='<div class="err">'+e.message+'</div>'; }
+}
+
+function initNormal(id){
+  const b=S[id].bundle, sys=b.system;
+  S[id].arrays = S[id].arrays || [{panels: sys.panel_qty||0, tilt:20, azimuth:180}];
+  renderNormal(id);
+}
+function renderNormal(id){
+  const b=S[id].bundle, sys=b.system, W=b.wattage;
+  const body=$('#body-'+id);
+  const rows = S[id].arrays.map((a,i)=>`
+    <tr>
+      <td>Array ${i+1}</td>
+      <td><input class="num" type="number" value="${a.panels}" onchange="upd('${id}',${i},'panels',this.value)"></td>
+      <td><input class="num" type="number" value="${a.tilt}" onchange="upd('${id}',${i},'tilt',this.value)"></td>
+      <td><input class="num" type="number" value="${a.azimuth}" onchange="upd('${id}',${i},'azimuth',this.value)"></td>
+      <td class="kwh">${W?((a.panels*W/1000).toFixed(2)):'?'}</td>
+      <td>${S[id].arrays.length>1?`<button class="ghost" onclick="delArr('${id}',${i})">✕</button>`:''}</td>
+    </tr>`).join('');
+  const sum = S[id].arrays.reduce((s,a)=>s+(+a.panels||0),0);
+  const ok = sum===sys.panel_qty;
+  body.innerHTML=`
+    <div class="hint">${sys.panel_model||'?'} · ${W?W+'W':'wattage?'} · inverter ${sys.inverter_model||'?'} (eff ${b.inverter_efficiency??'?'}%) · Creatio kW_DC ${sys.size_dc??'?'}</div>
+    <table class="arr"><thead><tr><th>Array</th><th>Panels</th><th>Tilt°</th><th>Azimuth°</th><th>kW DC</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <button class="ghost" style="margin-top:6px" onclick="addArr('${id}')">+ add array</button>
+    <div class="recon ${ok?'':'bad'}">Array panels <b>${sum}</b> / lot total <b>${sys.panel_qty}</b> ${ok?'✓':'⚠ mismatch'}</div>
+    ${runBlock(id)}`;
+  restoreResults(id);
+}
+
+async function initOptions(id){
+  const b=S[id].bundle, body=$('#body-'+id);
+  body.innerHTML='<div class="hint">No committed system — options lot. Parsing sizes…</div>';
+  try{
+    const res = await api('/api/options', {community_id:b.community_id||S[id].lot.community_id, plan_code:b.plan||''});
+    S[id].options=res;
+    renderOptions(id);
+  }catch(e){ body.innerHTML='<div class="err">'+e.message+'</div>'; }
+}
+function renderOptions(id){
+  const b=S[id].bundle, res=S[id].options, body=$('#body-'+id);
+  if(!res.block){ body.innerHTML='<div class="err">No system-sizes block on the Opportunity — enter manually / check Creatio.</div>'; return; }
+  const opts=(res.parsed&&res.parsed.options)||[];
+  const chips=opts.map((o,i)=>`<span class="opt ${S[id].variant===i?'sel':''}" onclick="pickVariant('${id}',${i})">${o.kw_dc} kW${o.panels?(' / '+o.panels+'p'):''} · ${o.label}</span>`).join('') || '<span class="hint">model found no confident match — read the block below</span>';
+  const warns=((res.parsed&&res.parsed.warnings)||[]).map(w=>'<div class="hint">⚠ '+w+'</div>').join('');
+  body.innerHTML=`
+    <div class="hint">Plan <b>${b.plan||'?'}</b> — pick the size that applies (confirm against the raw block):</div>
+    <div style="margin:6px 0">${chips}</div>${warns}
+    <details><summary class="hint">raw system-sizes block (model input)</summary><pre class="block">${escapeHtml(res.block)}</pre></details>
+    <div id="opts-editor-${id}"></div>`;
+  if(S[id].variant!=null) renderOptionEditor(id);
+}
+function pickVariant(id,i){
+  S[id].variant=i;
+  const o=S[id].options.parsed.options[i];
+  S[id].arrays=[{kw:o.kw_dc, tilt:20, azimuth:180}];
+  renderOptions(id);
+}
+function renderOptionEditor(id){
+  const box=$('#opts-editor-'+id); if(!box) return;
+  const rows=S[id].arrays.map((a,i)=>`
+    <tr><td>Array ${i+1}</td>
+      <td><input class="num" type="number" step="0.01" value="${a.kw}" onchange="upd('${id}',${i},'kw',this.value)"></td>
+      <td><input class="num" type="number" value="${a.tilt}" onchange="upd('${id}',${i},'tilt',this.value)"></td>
+      <td><input class="num" type="number" value="${a.azimuth}" onchange="upd('${id}',${i},'azimuth',this.value)"></td>
+      <td>${S[id].arrays.length>1?`<button class="ghost" onclick="delArr('${id}',${i})">✕</button>`:''}</td></tr>`).join('');
+  box.innerHTML=`
+    <table class="arr"><thead><tr><th>Array</th><th>kW DC</th><th>Tilt°</th><th>Azimuth°</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <button class="ghost" style="margin-top:6px" onclick="addArr('${id}')">+ add array</button>
+    ${runBlock(id)}`;
+  restoreResults(id);
+}
+
+function upd(id,i,k,v){ S[id].arrays[i][k]= (k==='panels')?parseInt(v||0):parseFloat(v||0); reRender(id); }
+function addArr(id){ const m=S[id].mode; S[id].arrays.push(m==='normal'?{panels:0,tilt:20,azimuth:270}:{kw:0,tilt:20,azimuth:270}); reRender(id); }
+function delArr(id,i){ S[id].arrays.splice(i,1); reRender(id); }
+function reRender(id){ if(S[id].mode==='normal') renderNormal(id); else renderOptionEditor(id); }
+
+function runBlock(id){
+  return `<div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+      <button class="primary" onclick="runLot('${id}')">▶ Run PVWatts</button>
+      <span id="runstatus-${id}" class="hint"></span>
+    </div><div id="results-${id}"></div>`;
+}
+
+function toArrayInputs(id){
+  const b=S[id].bundle, W=b.wattage;
+  return S[id].arrays.map(a=>({
+    system_capacity_kw: S[id].mode==='normal' ? +( (a.panels*(W||0)/1000).toFixed(4) ) : +(+a.kw).toFixed(4),
+    tilt: +a.tilt, azimuth: +a.azimuth
+  }));
+}
+
+async function runLot(id){
+  const b=S[id].bundle;
+  if(!b.zip){ $('#runstatus-'+id).innerHTML='<span class="err">no zip — cannot run</span>'; return; }
+  if(b.inverter_efficiency==null){ $('#runstatus-'+id).innerHTML='<span class="err">no inverter efficiency</span>'; return; }
+  $('#runstatus-'+id).textContent='running…';
+  try{
+    const arrays=toArrayInputs(id);
+    const {pv}=await api('/api/run',{zip:b.zip, inv_eff:b.inverter_efficiency, arrays});
+    S[id].pv=pv; S[id].sentArrays=arrays; $('#runstatus-'+id).textContent='';
+    renderResults(id);
+  }catch(e){ $('#runstatus-'+id).innerHTML='<span class="err">'+e.message+'</span>'; }
+}
+
+function restoreResults(id){ if(S[id].pv) renderResults(id); }
+function renderResults(id){
+  const box=$('#results-'+id); if(!box) return;
+  const pv=S[id].pv;
+  const rows=pv.arrays.map((r,i)=>`<div class="rrow"><span>Array ${i+1} · ${r.system_capacity_kw.toFixed(2)} kW · tilt ${r.tilt} az ${r.azimuth}</span><span class="kwh">${r.ac_annual?Math.round(r.ac_annual).toLocaleString():'—'} kWh</span></div>`).join('');
+  const cand = S[id].candidate!==false; // default candidate on
+  S[id].candidate=cand;
+  box.innerHTML=`<div class="results">
+    ${rows}
+    <div class="rrow"><span><b>Lot total</b> → CrsEstAnnualKwhProductionLot</span><span class="kwh">${pv.lot_total_kwh.toLocaleString()} kWh</span></div>
+    <div class="rrow"><label><input type="checkbox" ${cand?'checked':''} onchange="S['${id}'].candidate=this.checked"> Creatio Candidate (write this total back)</label></div>
+    <div style="margin-top:8px"><button class="primary" onclick="commit('${id}')">Save PDF${' + write Creatio'}</button> <span id="commit-${id}" class="hint"></span></div>
+  </div>`;
+}
+
+async function commit(id){
+  const b=S[id].bundle, pv=S[id].pv, cand=S[id].candidate!==false;
+  const variant = (S[id].mode==='options' && S[id].variant!=null) ? S[id].options.parsed.options[S[id].variant].label : null;
+  if(cand && !confirm(`Write ${pv.lot_total_kwh.toLocaleString()} kWh to Creatio (CrsEstAnnualKwhProductionLot) for lot ${b.lot}?\nThis updates the live record and removes the lot from the pool.`)) return;
+  $('#commit-'+id).textContent='saving…';
+  try{
+    const res=await api('/api/commit',{bundle:b, arrays:S[id].sentArrays, pv, is_candidate:cand, variant_label:variant});
+    $('#commit-'+id).innerHTML = `<span class="tag good">PDF saved</span> ${res.wrote_creatio?`<span class="tag good">Creatio updated (${res.rows} row)</span>`:'<span class="tag">audit only</span>'}<div class="path">${res.pdf_path}</div>`;
+  }catch(e){ $('#commit-'+id).innerHTML='<span class="err">'+e.message+'</span>'; }
+}
+
+function escapeHtml(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+</script>
+</body>
+</html>
