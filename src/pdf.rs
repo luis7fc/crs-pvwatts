@@ -67,6 +67,7 @@ pub fn write_audit_pdf(
 }
 
 /// Render the PDF to bytes.
+#[allow(unused_assignments)] // the macro's final `y -=` is intentionally unread
 pub fn render(
     bundle: &LotBundle,
     arrays: &[ArrayInput],

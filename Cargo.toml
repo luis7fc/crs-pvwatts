@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-# rustls-tls (not native-tls/OpenSSL) so the Windows cross-compile has no C TLS dep.
-reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "rustls-tls"] }
+# default-tls = native-tls -> SChannel on Windows (built-in, no OpenSSL/NASM/cmake),
+# Secure Transport on macOS. Simplest, most reliable Windows build; no C TLS dep.
+reqwest = { version = "0.12", features = ["json", "cookies"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
