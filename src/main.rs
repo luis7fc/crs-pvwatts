@@ -61,9 +61,12 @@ async fn main() -> Result<()> {
     let output_root = std::env::var("PVWATTS_OUTPUT_ROOT")
         .unwrap_or_else(|_| pdf::DEFAULT_ROOT.to_string());
 
-    // Sidecar is optional at startup — if the key isn't set yet, the UI's
-    // Settings screen collects it and rebuilds the client.
-    let sidecar = sidecar::Sidecar::from_env().ok();
+    // Sidecar is optional at startup — if the key isn't set yet, the UI's Settings
+    // screen collects it and rebuilds the client. Key comes from the OS credential
+    // vault (or legacy/override env, or a build-time baked value).
+    let sidecar_key = config::get_sidecar_key()
+        .or_else(|| option_env!("N8N_TOOLS_API_KEY").map(str::to_string));
+    let sidecar = sidecar_key.and_then(|k| sidecar::Sidecar::new(sidecar_base.clone(), k).ok());
     if sidecar.is_none() {
         eprintln!("sidecar key not set — configure it in the browser Settings screen");
     }
@@ -77,16 +80,18 @@ async fn main() -> Result<()> {
         session: Arc::new(Mutex::new(None)),
         sidecar: Arc::new(Mutex::new(sidecar)),
     };
-    // Auto-login from saved credentials (pvwatts.env) so it's one-time per PC.
-    if let (Ok(u), Ok(p)) = (std::env::var("CREATIO_USERNAME"), std::env::var("CREATIO_PASSWORD")) {
-        if !u.is_empty() && !p.is_empty() {
-            let cfg = creatio::CreatioConfig { base_url: creatio_base.clone(), username: u, password: p };
-            match creatio::Session::login(&cfg).await {
-                Ok(s) => {
-                    *state.session.lock().await = Some(s);
-                    println!("auto-logged in from saved credentials");
+    // Auto-login from saved config + vaulted password so it's one-time per PC.
+    if let Ok(u) = std::env::var("CREATIO_USERNAME") {
+        if !u.is_empty() {
+            if let Some(p) = config::get_creatio_password(&u) {
+                let cfg = creatio::CreatioConfig { base_url: creatio_base.clone(), username: u, password: p };
+                match creatio::Session::login(&cfg).await {
+                    Ok(s) => {
+                        *state.session.lock().await = Some(s);
+                        println!("auto-logged in from saved credentials");
+                    }
+                    Err(e) => eprintln!("saved credentials didn't work ({e}) — showing login"),
                 }
-                Err(e) => eprintln!("saved credentials didn't work ({e}) — showing login"),
             }
         }
     }

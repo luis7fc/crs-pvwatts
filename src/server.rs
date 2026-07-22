@@ -110,14 +110,13 @@ async fn post_settings(State(st): State<AppState>, Json(req): Json<SettingsReq>)
         sidecar_base = c.sidecar_base_url.clone();
     }
     if let Some(k) = req.sidecar_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        kv.push(("N8N_TOOLS_API_KEY".into(), k.to_string()));
-        std::env::set_var("N8N_TOOLS_API_KEY", k);
+        crate::config::save_sidecar_key(k)?; // -> OS credential vault (not the file)
+        std::env::set_var("N8N_TOOLS_API_KEY", k); // for the immediate rebuild this session
     }
     crate::config::save_kv(&kv.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>())?;
 
-    // Rebuild the sidecar client with the current URL + key (env or baked).
-    let key = std::env::var("N8N_TOOLS_API_KEY")
-        .ok()
+    // Rebuild the sidecar client with the current URL + key.
+    let key = crate::config::get_sidecar_key()
         .or_else(|| option_env!("N8N_TOOLS_API_KEY").map(str::to_string));
     if let Some(k) = key {
         *st.sidecar.lock().await = Some(sidecar::Sidecar::new(sidecar_base, k)?);
