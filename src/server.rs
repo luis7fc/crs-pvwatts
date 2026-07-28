@@ -183,16 +183,24 @@ struct OptReq {
 
 async fn options(State(st): State<AppState>, Json(req): Json<OptReq>) -> Api {
     let community_id = req.community_id.ok_or_else(|| anyhow::anyhow!("lot has no linked opportunity"))?;
+    let plan_code = req.plan_code.trim().to_string();
     let block = {
         let guard = st.session.lock().await;
         let sess = guard.as_ref().ok_or_else(|| anyhow::anyhow!("not logged in"))?;
         sess.fetch_system_sizes_block(&community_id).await?
     };
     match block {
+        // The parse endpoint requires a plan code — matching sizes to a lot IS the
+        // whole operation. Sending "" makes the sidecar raise and surface an opaque
+        // 500, so refuse here and tell the UI what's missing. Some lots genuinely
+        // carry no UsrLot_PlanElevation (e.g. 24 - 13302 Almondwood Circle).
+        Some(b) if plan_code.is_empty() => Ok(Json(
+            json!({"ok": true, "block": b, "parsed": null, "needs_elevation": true}),
+        )),
         Some(b) => {
             let sidecar = st.sidecar.lock().await.clone()
                 .ok_or_else(|| anyhow::anyhow!("sidecar not configured — open Settings"))?;
-            let parsed = sidecar.parse_system_sizes(&req.plan_code, &b).await?;
+            let parsed = sidecar.parse_system_sizes(&plan_code, &b).await?;
             Ok(Json(json!({"ok": true, "block": b, "parsed": parsed})))
         }
         None => Ok(Json(json!({"ok": true, "block": null, "parsed": null}))),

@@ -23,6 +23,17 @@ Empty size ≠ un-runnable; it means the buyer has plan **options** (possibly se
   kW-only lines with no panel count.
 - **Design = assisted-manual:** show raw block + best-effort parsed candidate sizes (kW, panels),
   highlight the lot plan code, **user confirms** which size(s) apply. Never commit a match silently.
+- **Optimize for RECALL, not precision — return EVERY size listed for the plan.** Options communities
+  are exactly the ones where the buyer has a real choice, and the consultant walks them through all
+  of it. Two sections listing plan 1900 at 4.84kW and 4.455kW are two legitimate offers, not one
+  right answer plus noise. Do NOT add narrowing heuristics (e.g. matching the lot number against a
+  section header like "lots 24 & 26") — silently dropping an option the buyer is entitled to hear is
+  worse than showing one extra chip a human discards. Confirmed 2026-07-28.
+- **Plan code is REQUIRED.** `/run/parse_system_sizes` raises on a blank `plan_code` (matching sizes
+  to a plan IS the operation) and the sidecar surfaces it as an opaque `500 {"error":"internal
+  error"}`. Some lots genuinely have no `UsrLot_PlanElevation` (e.g. `24 - 13302 Almondwood Circle`,
+  which also has no `UsrJobNumber`/`UsrZipCode`) → the tool must warn "no elevation" and skip the
+  call, never send `""`.
 - Block gives **kW directly** → feeds PVWatts `system_capacity` (no panel×wattage in this branch).
 - Multiple selected sizes → one PVWatts run per size. Fires ONLY when committed size is empty/0.
 
@@ -58,6 +69,21 @@ One request per array; sum `ac_annual` → lot total.
 ## 5. Writeback (WRITE — handle with care, confirm before firing)
 After run: `UpdateQuery` `UsrLotRecords.CrsEstAnnualKwhProductionLot` = Σ annual kWh.
 Once written, the lot leaves the pool. Consultation-complete stays a human step.
+
+**Exact envelope** (matches the two proven clients — `crs-n8n-tools-api/creatio_api_ptg2/
+creatio_writeback.py`, `inventory_tracker_app/creatio_api/pickup_api.py`; deviating 500s):
+- `operationType: 2` — Update. **`1` is INSERT**: the server dereferences an absent record and
+  returns `500 NullReferenceException` with `rowsAffected: -1`. (Cost us a day, 2026-07-28.)
+- `columnValues.items.<Col>` is **FLAT** — `{expressionType: 2, parameter: {...}}`. The nested
+  `{"expression": {...}}` wrapper is **SelectQuery-only**; correct in `select_payload`, fatal here.
+- Filter by the **primary-column macro** (`expressionType 1, functionType 1, macrosType 34`), not
+  `columnPath: "Id"`.
+- Include `includeProcessExecutionData: true` and `isForceUpdate: false`.
+- `dataValueType: 4` (Integer) for this column; send the value as a bare JSON number.
+- **`rowsAffected == 0` is a FAILURE, not a no-op.** Creatio returns `success: true` when the filter
+  matched nothing. `rowsAffected` counts MATCHED rows (an idempotent re-write still reports ≥1), so
+  0 means the lot wasn't found — must raise, or the UI reports a write that never happened and the
+  lot silently leaves the pool.
 
 ## Still open (not schema)
 - NREL/PVWatts API key + confirm PVWatts accepts bare zip in `address` (else geocode → lat/lon).

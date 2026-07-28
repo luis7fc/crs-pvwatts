@@ -320,16 +320,25 @@ impl Session {
     /// WRITE: set the lot's estimated annual kWh (CrsEstAnnualKwhProductionLot).
     /// Once written the lot leaves the pool. Call ONLY on explicit user confirm.
     pub async fn update_est_kwh(&self, lot_id: &str, kwh: i64) -> Result<i64> {
+        // Envelope mirrors the two proven writeback clients (crs-n8n-tools-api
+        // creatio_writeback.py, inventory_tracker_app pickup_api.py):
+        //   - operationType 2 = Update. 1 is INSERT — the server then dereferences
+        //     an absent record and 500s with a bare NullReferenceException.
+        //   - columnValues items are FLAT ({expressionType, parameter}); the
+        //     nested "expression" wrapper is SelectQuery-only.
+        //   - primary-column macros filter (macrosType 34), not columnPath "Id".
         let payload = json!({
             "rootSchemaName": "UsrLotRecords",
-            "operationType": 1, // Update
+            "operationType": 2, // Update
+            "includeProcessExecutionData": true,
             "columnValues": { "items": {
                 "CrsEstAnnualKwhProductionLot": {
-                    "expression": { "expressionType": 2,
-                        "parameter": { "dataValueType": DVT_INTEGER, "value": kwh } }
+                    "expressionType": 2,
+                    "parameter": { "dataValueType": DVT_INTEGER, "value": kwh }
                 }
             }},
-            "filters": equals_filter("Id", lot_id, DVT_GUID),
+            "filters": primary_id_filter(lot_id),
+            "isForceUpdate": false,
         });
         let url = format!("{}{}", self.base_url, UPDATE_SERVICE);
         let resp = self
@@ -349,7 +358,14 @@ impl Session {
         if data.get("success").and_then(Value::as_bool) == Some(false) {
             bail!("UpdateQuery success=false: {}", truncate(&data.to_string(), 600));
         }
-        Ok(data.get("rowsAffected").and_then(Value::as_i64).unwrap_or(0))
+        // Silent-no-op trap: Creatio returns success=true when the filter matched
+        // nothing. rowsAffected counts MATCHED rows, so an idempotent re-write still
+        // reports >=1 — 0 means the lot wasn't found and must not read as success.
+        let rows = data.get("rowsAffected").and_then(Value::as_i64).unwrap_or(0);
+        if rows <= 0 {
+            bail!("UpdateQuery affected {} rows for lot {} — record not found / filter miss; nothing was written", rows, lot_id);
+        }
+        Ok(rows)
     }
 }
 
@@ -405,6 +421,25 @@ fn pool_page_payload(cols: &[&str], row_count: i64, offset: i64) -> Value {
         "isPageable": true,
         "allColumns": false,
         "useLocalization": true,
+    })
+}
+
+/// Primary-column (Id) equality filter for writes — macrosType 34 addresses the
+/// root schema's primary column directly. This is the shape both proven Python
+/// writeback clients use for UpdateQuery.
+fn primary_id_filter(record_id: &str) -> Value {
+    json!({
+        "items": { "primaryColumnFilter": {
+            "filterType": 1,
+            "comparisonType": 3,
+            "isEnabled": true,
+            "trimDateTimeParameterToDate": false,
+            "leftExpression": { "expressionType": 1, "functionType": 1, "macrosType": 34 },
+            "rightExpression": { "expressionType": 2, "parameter": { "dataValueType": DVT_GUID, "value": record_id } },
+        }},
+        "logicalOperation": 0,
+        "isEnabled": true,
+        "filterType": 6,
     })
 }
 

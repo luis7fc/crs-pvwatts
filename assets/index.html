@@ -87,6 +87,15 @@
   <main>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <input id="search" placeholder="Search job # / lot # / community…" style="flex:1" oninput="applyFilter()">
+      <select id="sort" onchange="applyFilter()" title="Sort the loaded lots">
+        <option value="job">Sort: job #</option>
+        <option value="lot">Sort: lot #</option>
+        <option value="addr">Sort: address</option>
+        <option value="community">Sort: community</option>
+        <option value="plan">Sort: plan/elevation</option>
+        <option value="zip">Sort: zip (missing first)</option>
+      </select>
+      <button class="ghost" id="sortdir" onclick="toggleSortDir()" title="Ascending / descending">↑ Asc</button>
       <button class="ghost" onclick="clearSearch()">Clear</button>
     </div>
     <div id="lots"></div>
@@ -158,6 +167,40 @@ async function refresh(){
     applyFilter();
   }catch(e){ $('#lots').innerHTML='<div class="err">'+e.message+'</div>'; }
 }
+let SORT_DESC=false;
+// Job/lot numbers are strings but read as numbers ("9" before "10"), and plan
+// codes mix digits and letters — so compare numeric runs numerically.
+const COLLATOR = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
+const SORT_KEYS = {
+  job:       l => l.job,
+  lot:       l => l.lot,
+  addr:      l => l.lot_addr,
+  community: l => l.community,
+  plan:      l => l.plan,
+  zip:       l => l.zip,
+};
+function sortLots(list){
+  const field = $('#sort').value;
+  const key = SORT_KEYS[field] || SORT_KEYS.job;
+  // Missing zip is the actionable case (those lots can't run), so surface them;
+  // for every other field a blank is the least interesting row.
+  const blankFirst = (field === 'zip');
+  // Copy first — POOL must keep its Creatio (Id) order as the stable baseline.
+  return list.slice().sort((a,b)=>{
+    const x=key(a), y=key(b);
+    // Blanks group together regardless of direction — an empty string must not
+    // float to the top of an ascending A→Z sort just because "" < "a".
+    const bx=(x==null||x===''), by=(y==null||y==='');
+    if(bx||by) return bx&&by ? 0 : ((bx?1:-1) * (blankFirst?-1:1));
+    const c=COLLATOR.compare(String(x), String(y));
+    return SORT_DESC ? -c : c;
+  });
+}
+function toggleSortDir(){
+  SORT_DESC=!SORT_DESC;
+  $('#sortdir').textContent = SORT_DESC ? '↓ Desc' : '↑ Asc';
+  applyFilter();
+}
 function applyFilter(){
   const q=($('#search').value||'').trim().toLowerCase();
   const list = q ? POOL.filter(l =>
@@ -167,7 +210,7 @@ function applyFilter(){
     (l.community||'').toLowerCase().includes(q)
   ) : POOL;
   $('#poolcount').textContent = q ? (list.length+' of '+POOL.length) : (POOL.length+' lots');
-  renderLots(list);
+  renderLots(sortLots(list));
 }
 function clearSearch(){ $('#search').value=''; applyFilter(); }
 
@@ -249,6 +292,17 @@ async function initOptions(id){
 function renderOptions(id){
   const b=S[id].bundle, res=S[id].options, body=$('#body-'+id);
   if(!res.block){ body.innerHTML='<div class="err">No system-sizes block on the Opportunity — enter manually / check Creatio.</div>'; return; }
+  // No UsrLot_PlanElevation → there is nothing to match the block's per-plan
+  // lines against. Say so plainly instead of firing a parse that can't work.
+  if(res.needs_elevation){
+    body.innerHTML=`
+      <div class="err"><b>No elevation on this lot</b> — can't parse the Opportunity's
+      system sizes by plan. Enter the plan/elevation code on the Creatio lot record
+      (<code>UsrLot_PlanElevation</code>), then Refresh and reopen this lot.</div>
+      <div class="hint">The community's raw block is below for reference — each line is keyed by plan.</div>
+      <details open><summary class="hint">raw system-sizes block</summary><pre class="block">${escapeHtml(res.block)}</pre></details>`;
+    return;
+  }
   const opts=(res.parsed&&res.parsed.options)||[];
   const chips=opts.map((o,i)=>`<span class="opt ${S[id].variant===i?'sel':''}" onclick="pickVariant('${id}',${i})">${o.kw_dc} kW${o.panels?(' / '+o.panels+'p'):''} · ${o.label}</span>`).join('') || '<span class="hint">model found no confident match — read the block below</span>';
   const warns=((res.parsed&&res.parsed.warnings)||[]).map(w=>'<div class="hint">⚠ '+w+'</div>').join('');

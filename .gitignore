@@ -1,4 +1,6 @@
 /target
+# local test build copied out of target/ — the shared exe ships via Teams, not git
+/pvwatts_tool.exe
 # runtime config holds the sidecar key — never commit it
 pvwatts.env
 *.pdf
