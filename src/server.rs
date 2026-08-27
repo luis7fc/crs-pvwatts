@@ -231,11 +231,10 @@ struct CommitReq {
 }
 
 async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
-    let root = pdf::output_root();
-    let path = pdf::write_audit_pdf(&root, &req.bundle, &req.arrays, &req.pv, req.is_candidate, req.variant_label.as_deref())?;
-    // Same folder, same basename, .csv — every value on the PDF, flat.
-    let csv_path = crate::csv::write_lot_csv(&root, &req.bundle, &req.arrays, &req.pv, req.is_candidate, req.variant_label.as_deref())?;
-
+    // Creatio FIRST, documents second. Both artifacts state whether the writeback
+    // happened, so writing them first can leave a PDF on the I: drive claiming an
+    // update that then failed — update_est_kwh raises on rowsAffected == 0
+    // precisely so a write that never happened is never reported as one.
     let mut wrote = false;
     let mut rows = 0i64;
     if req.is_candidate {
@@ -244,6 +243,12 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
         rows = sess.update_est_kwh(&req.bundle.lot_id, req.pv.lot_total_kwh).await?;
         wrote = true;
     }
+
+    // `wrote`, not `req.is_candidate`: the documents record what actually landed.
+    let root = pdf::output_root();
+    let path = pdf::write_audit_pdf(&root, &req.bundle, &req.arrays, &req.pv, wrote, req.variant_label.as_deref())?;
+    // Same folder, same basename, .csv — every value on the PDF, flat.
+    let csv_path = crate::csv::write_lot_csv(&root, &req.bundle, &req.arrays, &req.pv, wrote, req.variant_label.as_deref())?;
     Ok(Json(json!({
         "ok": true,
         "pdf_path": path.display().to_string(),
