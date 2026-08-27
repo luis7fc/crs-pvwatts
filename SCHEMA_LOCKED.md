@@ -50,10 +50,16 @@ Empty size ≠ un-runnable; it means the buyer has plan **options** (possibly se
 
 `SMSystemDetailObject` holds ONE system per lot → multi-array is a UI construct, not Creatio data.
 
-## 3. Save path (per-lot PDF, human-readable, PVWatts + Creatio inputs/response, no creds)
+## 3. Save path (per-lot PDF + CSV, PVWatts + Creatio inputs/response, no creds)
 ```
-I:\Solar\1- New Construction\Production\{builder}\{job_name}\Consultations\{lot_addr}\{PV_WATTS_lot_addr}.pdf
+I:\Solar\1- New Construction\Production\{builder}\{job_name}\Consultations\{lot_addr}\PV_WATTS_{lot_addr}.pdf
+I:\Solar\1- New Construction\Production\{builder}\{job_name}\Consultations\{lot_addr}\PV_WATTS_{lot_addr}.csv
 ```
+Both are written on commit, same folder, same basename (options lots get the variant suffix).
+The PDF **clones the NREL PVWatts results page** - one two-page block per modelled array, then a
+CRS lot-summary page. The CSV is the same data flat: one row per array plus a `LOT_TOTAL` row.
+On the total row only additive columns are filled (DC size, AC/DC energy); irradiance, capacity
+factor and the geometry inputs are left blank rather than summed into a meaningless figure.
 - `{builder}`   = `Opportunity.Account`  (e.g. "Bonadelle Homes")  ← NOT CrsBuilderSPEC (that's a bool)
 - `{job_name}`  = `Opportunity.Title`    (e.g. "Mission Oaks")
 - `{lot_addr}`  = `UsrLotRecords.UsrLotNumberPlusAddress` (e.g. "33 - 3196 Scoon Place")
@@ -64,7 +70,27 @@ I:\Solar\1- New Construction\Production\{builder}\{job_name}\Consultations\{lot_
 One request per array; sum `ac_annual` → lot total.
 `system_capacity = array_panel_count × wattage ÷ 1000` · `module_type=1` (Premium) ·
 `array_type=1` (fixed roof) · `losses=14.1` · `dc_ac_ratio=1.2` · `gcr=0.4` ·
-`soiling=3×12` · `inv_eff` from Product · `tilt`/`azimuth` user-entered · `address`=zip.
+`soiling=3×12` · `inv_eff` from Product · `tilt`/`azimuth` user-entered · `lat`/`lon` geocoded
+from the lot zip (v8 dropped `address`; host is now `developer.nlr.gov`).
+
+**The sidecar returns the whole v8 `outputs` block** — `ac_monthly`, `solrad_monthly`,
+`poa_monthly`, `dc_monthly`, `ac_annual`, `solrad_annual`, `capacity_factor` — plus an echo of the
+inputs it sent (`losses`, `inv_eff`, `module_type`, `array_type`, `dc_ac_ratio`, `gcr`, the
+resolved 12-month `soiling_monthly`) and full `station_info`. The PDF prints the echoed inputs, so
+a defaults change cannot silently desync the page from the run that produced it.
+
+Two things the cloned page handles deliberately:
+- **The "system output may range from X to Y" band is NOT obtainable.** It is absent from the v8
+  JSON response (verified against the live API, 2026-08-27); the web UI derives it from 30 years of
+  historical weather. The slot carries the CRS input note instead — never an approximated range.
+- **The Annual AC row is the sum of the twelve ROUNDED monthly cells**, not `round(ac_annual)`, so
+  the printed column adds up. This is what NREL does: their own print shows 7,424 in that row
+  against a 7,425 headline.
+
+⚠ **The 3%/month soiling is a CRS rule, not a PVWatts default.** A web run of the same system with
+soiling 0 reads ~3% higher (measured: 7,425 vs 7,211 kWh on Castle & Cooke Highgate 65 Lot 3). The
+page's "Monthly Irradiance Loss" row shows the 3%, and the headline footnote names it, so the gap
+is visible rather than silent.
 
 ## 5. Writeback (WRITE — handle with care, confirm before firing)
 After run: `UpdateQuery` `UsrLotRecords.CrsEstAnnualKwhProductionLot` = Σ annual kWh.
@@ -86,6 +112,10 @@ creatio_writeback.py`, `inventory_tracker_app/creatio_api/pickup_api.py`; deviat
   lot silently leaves the pool.
 
 ## Still open (not schema)
-- NREL/PVWatts API key + confirm PVWatts accepts bare zip in `address` (else geocode → lat/lon).
 - Confirm coworker PCs reach Creatio without VPN.
+- PDF typography: NREL sets "RESULTS" and the headline kWh in a condensed display face. The clone
+  uses builtin Helvetica (keeps the single self-contained .exe), so those two runs of text are
+  wider than the original; everything else lands on the reference's measured grid. Embedding a
+  condensed TTF would close it, at the cost of exe size.
+- The NREL logo block is replaced by a "PVWatts®" wordmark — their logo artwork is not reproduced.
 - Login menu: each user enters their own Creatio creds at runtime.

@@ -6,8 +6,13 @@
 //! coworker machine) and the exe tiny.
 //!
 //! Endpoints (POST, x-api-key):
-//!   /run/pvwatts            -> zip + inv_eff + arrays  => per-array + lot-total kWh
+//!   /run/pvwatts            -> zip + inv_eff + arrays  => full v8 outputs per array
 //!   /run/parse_system_sizes -> plan_code + block       => candidate sizes (options branch)
+//!
+//! The sidecar returns the whole PVWatts v8 `outputs` block plus an echo of the
+//! inputs it actually sent. Everything the cloned NREL results page prints comes
+//! from that response — the PDF never re-derives an input, so a defaults change
+//! on the sidecar cannot silently desync the page from the run that produced it.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -31,18 +36,117 @@ pub struct ArrayInput {
 }
 
 // ── /run/pvwatts response ───────────────────────────────────────────────────
+
+/// The run's resolved PVWatts inputs, echoed by the sidecar.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PvDefaults {
+    pub module_type: Option<i64>,
+    pub array_type: Option<i64>,
+    pub losses: Option<f64>,
+    pub dc_ac_ratio: Option<f64>,
+    pub gcr: Option<f64>,
+    pub soiling: Option<f64>,
+}
+
+/// Weather station PVWatts actually resolved for the lat/lon.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StationInfo {
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub elev: Option<f64>,
+    pub tz: Option<f64>,
+    pub location: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub country: Option<String>,
+    pub solar_resource_file: Option<String>,
+    /// Metres from the requested point to the station.
+    pub distance: Option<f64>,
+    pub weather_data_source: Option<String>,
+}
+
+impl StationInfo {
+    /// The NREL page prints the station offset in miles.
+    pub fn distance_mi(&self) -> Option<f64> {
+        self.distance.map(|m| m / 1609.344)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PvArray {
     pub system_capacity_kw: f64,
     pub tilt: f64,
     pub azimuth: f64,
+
+    // Inputs echoed back by the sidecar (all optional: an older sidecar omits them).
+    #[serde(default)]
+    pub inv_eff: Option<f64>,
+    #[serde(default)]
+    pub losses: Option<f64>,
+    #[serde(default)]
+    pub module_type: Option<i64>,
+    #[serde(default)]
+    pub array_type: Option<i64>,
+    #[serde(default)]
+    pub dc_ac_ratio: Option<f64>,
+    #[serde(default)]
+    pub gcr: Option<f64>,
+    /// 12 monthly soiling percentages — the page's "Monthly Irradiance Loss" row.
+    #[serde(default)]
+    pub soiling_monthly: Option<Vec<f64>>,
+
+    // PVWatts v8 outputs.
     pub ac_annual: Option<f64>,
     pub ac_monthly: Option<Vec<f64>>,
     pub solrad_annual: Option<f64>,
     #[serde(default)]
+    pub solrad_monthly: Option<Vec<f64>>,
+    #[serde(default)]
+    pub poa_monthly: Option<Vec<f64>>,
+    #[serde(default)]
+    pub dc_monthly: Option<Vec<f64>>,
+    #[serde(default)]
+    pub capacity_factor: Option<f64>,
+
+    #[serde(default)]
     pub errors: Vec<String>,
     #[serde(default)]
     pub warnings: Vec<String>,
+}
+
+impl PvArray {
+    /// PVWatts module_type -> the label the NREL page prints.
+    pub fn module_type_label(&self) -> &'static str {
+        match self.module_type {
+            Some(0) => "Standard",
+            Some(1) => "Premium",
+            Some(2) => "Thin film",
+            _ => "Premium",
+        }
+    }
+
+    /// PVWatts array_type -> the label the NREL page prints.
+    pub fn array_type_label(&self) -> &'static str {
+        match self.array_type {
+            Some(0) => "Fixed (open rack)",
+            Some(1) => "Fixed (roof mount)",
+            Some(2) => "1-Axis",
+            Some(3) => "1-Axis Backtracking",
+            Some(4) => "2-Axis",
+            _ => "Fixed (roof mount)",
+        }
+    }
+
+    /// The page's Annual AC row is the sum of the twelve ROUNDED monthly cells,
+    /// not round(ac_annual) — so the printed column always adds up. The NREL
+    /// reference PDF shows 7,424 in this row against a 7,425 headline for
+    /// exactly that reason. Falls back to ac_annual with no monthly series.
+    pub fn ac_annual_displayed(&self) -> Option<i64> {
+        match &self.ac_monthly {
+            Some(m) if m.len() == 12 => Some(m.iter().map(|v| v.round() as i64).sum()),
+            _ => self.ac_annual.map(|v| v.round() as i64),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,7 +158,10 @@ pub struct PvResult {
     pub api_key_source: String,
     pub lot_total_kwh: i64,
     pub arrays: Vec<PvArray>,
-    pub station_info: Option<serde_json::Value>,
+    #[serde(default)]
+    pub defaults: Option<PvDefaults>,
+    #[serde(default)]
+    pub station_info: Option<StationInfo>,
 }
 
 // ── /run/parse_system_sizes response (options branch) ───────────────────────
@@ -88,7 +195,7 @@ impl Sidecar {
 
     /// Sidecar key resolution: runtime env / pvwatts.env (N8N_TOOLS_API_KEY),
     /// else the value baked at build time (CI sets it as a secret), else error.
-    /// Users never enter this — it's the tool's shared key, not a per-user cred.
+    /// Users never enter this — it is the tool's shared key, not a per-user cred.
     pub fn from_env() -> Result<Self> {
         let base = std::env::var("SIDECAR_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE.to_string());
         let api_key = std::env::var("N8N_TOOLS_API_KEY")

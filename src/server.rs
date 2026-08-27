@@ -233,6 +233,8 @@ struct CommitReq {
 async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
     let root = pdf::output_root();
     let path = pdf::write_audit_pdf(&root, &req.bundle, &req.arrays, &req.pv, req.is_candidate, req.variant_label.as_deref())?;
+    // Same folder, same basename, .csv — every value on the PDF, flat.
+    let csv_path = crate::csv::write_lot_csv(&root, &req.bundle, &req.arrays, &req.pv, req.is_candidate, req.variant_label.as_deref())?;
 
     let mut wrote = false;
     let mut rows = 0i64;
@@ -242,5 +244,11 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
         rows = sess.update_est_kwh(&req.bundle.lot_id, req.pv.lot_total_kwh).await?;
         wrote = true;
     }
-    Ok(Json(json!({"ok": true, "pdf_path": path.display().to_string(), "wrote_creatio": wrote, "rows": rows})))
+    Ok(Json(json!({
+        "ok": true,
+        "pdf_path": path.display().to_string(),
+        "csv_path": csv_path.display().to_string(),
+        "wrote_creatio": wrote,
+        "rows": rows
+    })))
 }

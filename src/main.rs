@@ -3,7 +3,8 @@
 //!   calc.rs     — wattage-from-model + kW math (tested)
 //!   creatio.rs  — Creatio read layer (pool, per-lot bundle) + writeback
 //!   sidecar.rs  — sidecar client (PVWatts + parse-assist; the only open-net dep)
-//!   pdf.rs      — per-lot audit PDF -> I: drive
+//!   pdf.rs      — per-lot audit PDF (NREL results-page clone) -> I: drive
+//!   csv.rs      — per-lot CSV of every value on that PDF, written beside it
 //!   server.rs   — axum: serves the SPA + JSON API
 //!
 //! Runs on the coworker's PC: starts a localhost server and opens the browser.
@@ -14,6 +15,7 @@
 mod calc;
 mod config;
 mod creatio;
+mod csv;
 mod pdf;
 mod server;
 mod sidecar;

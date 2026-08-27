@@ -2,8 +2,13 @@
 
 Local browser app for the CRS consultation team. Reads the pending-lot pool from
 Creatio, lets the team split each lot's panels into arrays (tilt/azimuth), runs
-NREL PVWatts, writes a per-lot audit PDF to the I: drive, and (on confirm) writes
-the estimated annual kWh back to Creatio.
+NREL PVWatts, writes a per-lot audit PDF + CSV to the I: drive, and (on confirm)
+writes the estimated annual kWh back to Creatio.
+
+The PDF is a **clone of the NREL PVWatts results page** — same grid, same tables,
+same figures — one two-page block per modelled array (PVWatts models one array per
+run), followed by a CRS lot-summary page. The CSV beside it carries every value on
+the PDF: one row per array plus a `LOT_TOTAL` row.
 
 It's a single self-contained Windows `.exe` — no installer, no DLLs (the web UI
 is embedded; TLS uses Windows' built-in SChannel). Double-click → it opens the
@@ -75,9 +80,16 @@ After that the user just double-clicks the exe → it auto-logs in → pending p
    - **Normal:** committed system → split its panels into arrays (tilt/azimuth).
    - **Options:** empty size → pick a size from the parsed Opportunity block.
 4. **Run PVWatts** per array → summed lot total.
-5. **Save:** writes the audit PDF; if *Creatio Candidate* is checked (with a
-   confirm), writes the total to `CrsEstAnnualKwhProductionLot` and the lot leaves
-   the pool.
+5. **Save:** writes the audit PDF **and the matching CSV** (same folder, same
+   basename); if *Creatio Candidate* is checked (with a confirm), writes the total
+   to `CrsEstAnnualKwhProductionLot` and the lot leaves the pool.
+
+> **Why the kWh differs from a PVWatts web run.** CRS applies 3%/month soiling per
+> the 7/20/2026 input rules; the public site defaults to none. Same system, the web
+> reads ~3% higher. The page shows the 3% in its "Monthly Irradiance Loss" row and
+> names it in the headline footnote, so the gap is on the page rather than hidden.
+> The site's "system output may range from X to Y" band is **not** in the PVWatts
+> JSON API, so the clone omits it instead of approximating it.
 
 ---
 
@@ -108,7 +120,7 @@ to it (the Settings screen writes this for you). Real env vars override the file
 | `N8N_TOOLS_API_KEY` | sidecar key (required) | — |
 | `SIDECAR_BASE_URL` | sidecar URL | `https://crs-n8n-tools-api.onrender.com` |
 | `CREATIO_BASE_URL` | Creatio tenant | `https://citadelrs.creatio.com` |
-| `PVWATTS_OUTPUT_ROOT` | PDF root (mapped I:) | `I:\Solar\1- New Construction\Production` |
+| `PVWATTS_OUTPUT_ROOT` | PDF + CSV root (mapped I:) | `I:\Solar\1- New Construction\Production` |
 | `CREATIO_USERNAME` / `_PASSWORD` | saved by "Remember" | — |
 | `PORT` | localhost port | `8787` |
 
@@ -131,7 +143,20 @@ src/
   creatio.rs   Creatio read layer (paged pool, per-lot bundle) + writeback
   sidecar.rs   sidecar client (PVWatts + parse-assist)
   calc.rs      wattage-from-model parser + kW math (tested)
-  pdf.rs       per-lot audit PDF → I: drive
+  pdf.rs       per-lot audit PDF (NREL results-page clone) → I: drive
+  csv.rs       per-lot CSV of every value on that PDF, written beside it
   config.rs    pvwatts.env read/write (remember creds, settings)
 assets/index.html   single-page UI (login, settings, pool, search, run, commit)
 ```
+
+### Eyeballing the PDF after a layout change
+`pdf.rs` carries an ignored test that renders the Castle & Cooke Highgate 65 Lot 3
+figures (the reference NREL print) so the output can be diffed against the real
+page. `PVWATTS_SAMPLE_ARRAYS` fans it out to check the multi-array structure.
+
+```bash
+PVWATTS_SAMPLE_OUT=/tmp/sample cargo test --offline -- --ignored render_reference_sample
+```
+
+Every coordinate in `pdf.rs` is in PDF points measured off that print, top-left
+origin, so they stay comparable to a fresh measurement off another NREL page.
