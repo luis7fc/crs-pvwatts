@@ -237,10 +237,13 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
     // precisely so a write that never happened is never reported as one.
     let mut wrote = false;
     let mut rows = 0i64;
+    // "Estimated Monthly kWh Production" (SMEstimatedMonthlyKwHProduction): average
+    // month from the PVWatts monthly AC series, summed across arrays, rounded.
+    let monthly_kwh = req.pv.monthly_avg_kwh();
     if req.is_candidate {
         let guard = st.session.lock().await;
         let sess = guard.as_ref().ok_or_else(|| anyhow::anyhow!("not logged in"))?;
-        rows = sess.update_est_kwh(&req.bundle.lot_id, req.pv.lot_total_kwh).await?;
+        rows = sess.update_est_kwh(&req.bundle.lot_id, req.pv.lot_total_kwh, monthly_kwh).await?;
         wrote = true;
     }
 
@@ -254,6 +257,7 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
         "pdf_path": path.display().to_string(),
         "csv_path": csv_path.display().to_string(),
         "wrote_creatio": wrote,
+        "monthly_kwh": monthly_kwh,
         "rows": rows
     })))
 }

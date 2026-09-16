@@ -275,7 +275,7 @@ mod tests {
         LotBundle {
             lot_id: "id".into(), job: None, lot: None, lot_addr: None, zip: None,
             plan: None, builder: None, job_name: None, system: None,
-            system_count: 0, inverter_efficiency: None, wattage: None,
+            system_count: 0, options_lot: true, inverter_efficiency: None, wattage: None,
         }
     }
 

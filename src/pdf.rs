@@ -552,6 +552,9 @@ fn draw_summary_page(c: &Canvas, bundle: &LotBundle, pv: &PvResult, is_candidate
             .map(|e| format!("{e}%")).unwrap_or_else(|| "?".into()), &mut y);
         row(c, "System size DC", &sys.size_dc.map(|d| format!("{d:.2} kW"))
             .unwrap_or_else(|| "?".into()), &mut y);
+        if bundle.options_lot {
+            row(c, "Committed system", "unsized (0 panels / 0 kW) \u{2014} options lot, size chosen from the plan block", &mut y);
+        }
     } else {
         row(c, "Committed system", "none \u{2014} options lot, size chosen from the plan block", &mut y);
     }
@@ -597,7 +600,7 @@ fn draw_summary_page(c: &Canvas, bundle: &LotBundle, pv: &PvResult, is_candidate
 
     // Reconcile the split against what Creatio holds — a mismatch here is the
     // usual sign the team split the wrong panel count.
-    if let Some(sz) = bundle.system.as_ref().and_then(|s| s.size_dc) {
+    if let Some(sz) = bundle.system.as_ref().and_then(|s| s.size_dc).filter(|sz| *sz > 0.0) {
         let delta = sum_kw - sz;
         let msg = if delta.abs() < 0.005 {
             format!("Array split matches the Creatio system size ({sz:.2} kW).")
@@ -750,7 +753,7 @@ mod sample {
             let bundle = LotBundle {
                 lot_id: "id".into(), job: None, lot: None, lot_addr: None, zip: None,
                 plan: None, builder: None, job_name: None, system: None,
-                system_count: 0, inverter_efficiency: None, wattage: None,
+                system_count: 0, options_lot: true, inverter_efficiency: None, wattage: None,
             };
             let pv = PvResult {
                 ok: true, zip: "93311".into(), lat: 35.3, lon: -119.1,
@@ -796,6 +799,7 @@ mod sample {
                 size_ac: Some(3.76),
             }),
             system_count: 1,
+            options_lot: false,
             inverter_efficiency: Some(96.0),
             wattage: Some(410),
         };

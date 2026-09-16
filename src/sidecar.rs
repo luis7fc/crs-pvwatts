@@ -147,6 +147,15 @@ impl PvArray {
             _ => self.ac_annual.map(|v| v.round() as i64),
         }
     }
+
+    /// Mean of the twelve PVWatts monthly AC values (unrounded); falls back to
+    /// ac_annual / 12 when the monthly series is absent.
+    pub fn ac_monthly_avg(&self) -> Option<f64> {
+        match &self.ac_monthly {
+            Some(m) if m.len() == 12 => Some(m.iter().sum::<f64>() / 12.0),
+            _ => self.ac_annual.map(|v| v / 12.0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +171,15 @@ pub struct PvResult {
     pub defaults: Option<PvDefaults>,
     #[serde(default)]
     pub station_info: Option<StationInfo>,
+}
+
+impl PvResult {
+    /// Lot-level "Estimated Monthly kWh Production": the average month across the
+    /// year, from the PVWatts API's monthly AC series, summed over all arrays.
+    pub fn monthly_avg_kwh(&self) -> i64 {
+        let sum: f64 = self.arrays.iter().filter_map(|a| a.ac_monthly_avg()).sum();
+        if sum > 0.0 { sum.round() as i64 } else { (self.lot_total_kwh as f64 / 12.0).round() as i64 }
+    }
 }
 
 // ── /run/parse_system_sizes response (options branch) ───────────────────────

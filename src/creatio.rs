@@ -20,6 +20,10 @@ use crate::calc;
 const DATA_SERVICE: &str = "/0/DataService/json/SyncReply/SelectQuery";
 const UPDATE_SERVICE: &str = "/0/DataService/json/SyncReply/UpdateQuery";
 const DVT_INTEGER: i64 = 4; // CrsEstAnnualKwhProductionLot writeback
+/// UsrLotRecords column behind the "Estimated Monthly kWh Production" field on the
+/// lot page. Written alongside the annual total on commit: the average of the
+/// PVWatts monthly AC series, summed across the lot's arrays, rounded.
+pub const MONTHLY_KWH_FIELD: &str = "SMEstimatedMonthlyKwHProduction";
 const TIMEZONE_OFFSET_MIN: i64 = 480; // Pacific — tenant-local (LA) dates
 
 // dataValueType enums used in equality filters (proven per column in probes)
@@ -94,6 +98,11 @@ pub struct LotBundle {
     pub job_name: Option<String>,  // Opportunity.Title    -> save-path {job_name}
     pub system: Option<SystemDetail>,
     pub system_count: usize,       // >1 would be unusual (multi-array not modeled in Creatio)
+    /// True when the lot takes the options branch: no committed system row, OR a
+    /// row whose panel qty and kW DC are both blank/zero (record exists but was
+    /// never sized). Single source of truth for the UI's mode switch.
+    #[serde(default)]
+    pub options_lot: bool,
     pub inverter_efficiency: Option<f64>, // Product.SMInverterEfficiency
     pub wattage: Option<u32>,      // parsed from panel model -> UI live kW = panels*W/1000
 }
@@ -285,6 +294,10 @@ impl Session {
             .as_ref()
             .and_then(|s| s.panel_model.as_deref())
             .and_then(calc::wattage_from_model);
+        let options_lot = match &system {
+            None => true,
+            Some(s) => s.panel_qty.unwrap_or(0) == 0 && s.size_dc.unwrap_or(0.0) <= 0.0,
+        };
 
         Ok(LotBundle {
             lot_id: lot.lot_id.clone(),
@@ -297,6 +310,7 @@ impl Session {
             job_name,
             system,
             system_count,
+            options_lot,
             inverter_efficiency,
             wattage,
         })
@@ -317,9 +331,10 @@ impl Session {
             .and_then(|o| disp(field(o, "UsrSystemSizePerPlan"))))
     }
 
-    /// WRITE: set the lot's estimated annual kWh (CrsEstAnnualKwhProductionLot).
+    /// WRITE: set the lot's estimated annual kWh (CrsEstAnnualKwhProductionLot) and
+    /// the estimated monthly kWh (MONTHLY_KWH_FIELD) in one UpdateQuery.
     /// Once written the lot leaves the pool. Call ONLY on explicit user confirm.
-    pub async fn update_est_kwh(&self, lot_id: &str, kwh: i64) -> Result<i64> {
+    pub async fn update_est_kwh(&self, lot_id: &str, kwh: i64, monthly_kwh: i64) -> Result<i64> {
         // Envelope mirrors the two proven writeback clients (crs-n8n-tools-api
         // creatio_writeback.py, inventory_tracker_app pickup_api.py):
         //   - operationType 2 = Update. 1 is INSERT — the server then dereferences
@@ -335,6 +350,10 @@ impl Session {
                 "CrsEstAnnualKwhProductionLot": {
                     "expressionType": 2,
                     "parameter": { "dataValueType": DVT_INTEGER, "value": kwh }
+                },
+                MONTHLY_KWH_FIELD: {
+                    "expressionType": 2,
+                    "parameter": { "dataValueType": DVT_INTEGER, "value": monthly_kwh }
                 }
             }},
             "filters": primary_id_filter(lot_id),

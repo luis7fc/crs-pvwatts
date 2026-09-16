@@ -247,7 +247,9 @@ async function loadBundle(id){
   try{
     const {bundle} = await api('/api/bundle', S[id].lot);
     S[id].bundle=bundle;
-    if(bundle.system){ S[id].mode='normal'; initNormal(id); }
+    // options_lot is decided server-side: no system row, OR a row with 0 panels
+    // and 0 kW DC (record exists but was never sized).
+    if(!bundle.options_lot){ S[id].mode='normal'; initNormal(id); }
     else { S[id].mode='options'; await initOptions(id); }
   }catch(e){ body.innerHTML='<div class="err">'+e.message+'</div>'; }
 }
@@ -282,7 +284,7 @@ function renderNormal(id){
 
 async function initOptions(id){
   const b=S[id].bundle, body=$('#body-'+id);
-  body.innerHTML='<div class="hint">No committed system — options lot. Parsing sizes…</div>';
+  body.innerHTML='<div class="hint">'+(b.system?'Committed system is unsized (0 panels / 0 kW)':'No committed system')+' — options lot. Parsing sizes…</div>';
   try{
     const res = await api('/api/options', {community_id:b.community_id||S[id].lot.community_id, plan_code:b.plan||''});
     S[id].options=res;
@@ -306,7 +308,8 @@ function renderOptions(id){
   const opts=(res.parsed&&res.parsed.options)||[];
   const chips=opts.map((o,i)=>`<span class="opt ${S[id].variant===i?'sel':''}" onclick="pickVariant('${id}',${i})">${o.kw_dc} kW${o.panels?(' / '+o.panels+'p'):''} · ${o.label}</span>`).join('') || '<span class="hint">model found no confident match — read the block below</span>';
   const warns=((res.parsed&&res.parsed.warnings)||[]).map(w=>'<div class="hint">⚠ '+w+'</div>').join('');
-  body.innerHTML=`
+  const sysline = b.system ? `<div class="hint">Unsized Creatio system: inverter ${b.system.inverter_model||'?'} (eff ${b.inverter_efficiency??'?'}%) · ${b.system.panel_model||'no panel model'}</div>` : '';
+  body.innerHTML=`${sysline}
     <div class="hint">Plan <b>${b.plan||'?'}</b> — pick the size that applies (confirm against the raw block):</div>
     <div style="margin:6px 0">${chips}</div>${warns}
     <details><summary class="hint">raw system-sizes block (model input)</summary><pre class="block">${escapeHtml(res.block)}</pre></details>
@@ -327,7 +330,11 @@ function renderOptionEditor(id){
       <td><input class="num" type="number" value="${a.tilt}" onchange="upd('${id}',${i},'tilt',this.value)"></td>
       <td><input class="num" type="number" value="${a.azimuth}" onchange="upd('${id}',${i},'azimuth',this.value)"></td>
       <td>${S[id].arrays.length>1?`<button class="ghost" onclick="delArr('${id}',${i})">✕</button>`:''}</td></tr>`).join('');
+  const b=S[id].bundle;
+  if(S[id].invEff==null) S[id].invEff = (b.inverter_efficiency!=null) ? b.inverter_efficiency : 96; // 96 = PVWatts default (no inverter on record)
+  const effNote = (b.inverter_efficiency!=null) ? 'from the Creatio inverter' : 'no inverter on record — PVWatts default; edit if known';
   box.innerHTML=`
+    <div class="rrow" style="margin:6px 0"><label>Inverter efficiency % <input class="num" type="number" step="0.1" value="${S[id].invEff}" onchange="S['${id}'].invEff=parseFloat(this.value||0)"></label> <span class="hint">${effNote}</span></div>
     <table class="arr"><thead><tr><th>Array</th><th>kW DC</th><th>Tilt°</th><th>Azimuth°</th><th></th></tr></thead><tbody>${rows}</tbody></table>
     <button class="ghost" style="margin-top:6px" onclick="addArr('${id}')">+ add array</button>
     ${runBlock(id)}`;
@@ -357,11 +364,12 @@ function toArrayInputs(id){
 async function runLot(id){
   const b=S[id].bundle;
   if(!b.zip){ $('#runstatus-'+id).innerHTML='<span class="err">no zip — cannot run</span>'; return; }
-  if(b.inverter_efficiency==null){ $('#runstatus-'+id).innerHTML='<span class="err">no inverter efficiency</span>'; return; }
+  const invEff = (S[id].mode==='options' && S[id].invEff!=null) ? S[id].invEff : b.inverter_efficiency;
+  if(invEff==null || !(invEff>0)){ $('#runstatus-'+id).innerHTML='<span class="err">no inverter efficiency</span>'; return; }
   $('#runstatus-'+id).textContent='running…';
   try{
     const arrays=toArrayInputs(id);
-    const {pv}=await api('/api/run',{zip:b.zip, inv_eff:b.inverter_efficiency, arrays});
+    const {pv}=await api('/api/run',{zip:b.zip, inv_eff:invEff, arrays});
     S[id].pv=pv; S[id].sentArrays=arrays; $('#runstatus-'+id).textContent='';
     renderResults(id);
   }catch(e){ $('#runstatus-'+id).innerHTML='<span class="err">'+e.message+'</span>'; }
@@ -385,7 +393,7 @@ function renderResults(id){
 async function commit(id){
   const b=S[id].bundle, pv=S[id].pv, cand=S[id].candidate!==false;
   const variant = (S[id].mode==='options' && S[id].variant!=null) ? S[id].options.parsed.options[S[id].variant].label : null;
-  if(cand && !confirm(`Write ${pv.lot_total_kwh.toLocaleString()} kWh to Creatio (CrsEstAnnualKwhProductionLot) for lot ${b.lot}?\nThis updates the live record and removes the lot from the pool.`)) return;
+  if(cand && !confirm(`Write ${pv.lot_total_kwh.toLocaleString()} kWh/yr + ${Math.round(pv.lot_total_kwh/12).toLocaleString()} kWh/mo to Creatio for lot ${b.lot}?\nThis updates the live record and removes the lot from the pool.`)) return;
   $('#commit-'+id).textContent='saving…';
   try{
     const res=await api('/api/commit',{bundle:b, arrays:S[id].sentArrays, pv, is_candidate:cand, variant_label:variant});
