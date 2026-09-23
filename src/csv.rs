@@ -13,6 +13,14 @@
 //!
 //! Written UTF-8 with a BOM so Excel on Windows renders the degree signs and em
 //! dashes instead of mojibake.
+//!
+//! LEDGER: every Save is also filed centrally under `ledger_dir()` (default
+//! `I:\Inventory and Purchasing\pv_watts_db`) as `<lot>-<job name>-v<N>.csv`,
+//! identical in shape to the lot CSV, and appended to `all_submissions.csv` in
+//! the same folder. N counts prior submissions for that lot+job, so options lots
+//! saved several times keep every version. The ledger is best-effort: a share
+//! outage must not block the consultation, so the caller reports the failure
+//! instead of failing the commit.
 
 use std::fs;
 use std::io::Write;
@@ -21,7 +29,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::creatio::LotBundle;
-use crate::pdf::lot_paths;
+use crate::pdf::{lot_paths, safe};
 use crate::sidecar::{ArrayInput, PvArray, PvResult};
 
 const MONTH_KEYS: [&str; 12] = [
@@ -55,6 +63,7 @@ fn s(o: &Option<String>) -> String {
 fn header() -> Vec<String> {
     let mut h: Vec<String> = [
         "record_type", "generated_at", "tool_version",
+        "submission_key", "submission_version",
         // lot identity
         "builder", "job_name", "job", "lot", "lot_addr", "lot_id", "plan",
         "variant_label", "is_candidate", "creatio_writeback_kwh",
@@ -70,7 +79,7 @@ fn header() -> Vec<String> {
         "station_solar_resource_file", "station_distance_m", "station_distance_mi",
         "weather_data_source", "nrel_key_source",
         // PV system specifications (as sent to PVWatts)
-        "array_index", "dc_system_size_kw", "module_type", "module_type_label",
+        "array_index", "panels", "dc_system_size_kw", "module_type", "module_type_label",
         "array_type", "array_type_label", "losses_pct", "tilt_deg", "azimuth_deg",
         "dc_ac_ratio", "inv_eff_pct", "gcr", "albedo", "bifacial",
         // annual results
@@ -127,13 +136,15 @@ fn sum_monthly(arrays: &[PvArray], pick: fn(&PvArray) -> &Option<Vec<f64>>) -> V
 
 /// Identity + station columns, identical on every row of the file.
 fn common(bundle: &LotBundle, pv: &PvResult, generated: &str, is_candidate: bool,
-          variant_label: Option<&str>, record_type: &str) -> Vec<String> {
+          variant_label: Option<&str>, record_type: &str, sub: &Submission) -> Vec<String> {
     let sys = bundle.system.as_ref();
     let st = pv.station_info.clone().unwrap_or_default();
     vec![
         record_type.to_string(),
         generated.to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
+        sub.key.clone(),
+        sub.version.to_string(),
         s(&bundle.builder),
         s(&bundle.job_name),
         s(&bundle.job),
@@ -173,11 +184,20 @@ fn common(bundle: &LotBundle, pv: &PvResult, generated: &str, is_candidate: bool
     ]
 }
 
+/// Panels in one array, recovered from kW DC and the Creatio panel wattage.
+/// Only meaningful on normal lots (options lots are sized in kW, not panels).
+fn panels_for(bundle: &LotBundle, a: &PvArray) -> Option<u32> {
+    if bundle.options_lot { return None; }
+    let w = bundle.wattage.filter(|w| *w > 0)? as f64;
+    Some((a.system_capacity_kw * 1000.0 / w).round() as u32)
+}
+
 fn array_row(bundle: &LotBundle, pv: &PvResult, a: &PvArray, idx: usize, generated: &str,
-             is_candidate: bool, variant_label: Option<&str>) -> Vec<String> {
-    let mut r = common(bundle, pv, generated, is_candidate, variant_label, "ARRAY");
+             is_candidate: bool, variant_label: Option<&str>, sub: &Submission) -> Vec<String> {
+    let mut r = common(bundle, pv, generated, is_candidate, variant_label, "ARRAY", sub);
     r.extend([
         (idx + 1).to_string(),
+        num(panels_for(bundle, a)),
         a.system_capacity_kw.to_string(),
         num(a.module_type),
         a.module_type_label().to_string(),
@@ -207,12 +227,14 @@ fn array_row(bundle: &LotBundle, pv: &PvResult, a: &PvArray, idx: usize, generat
 }
 
 fn total_row(bundle: &LotBundle, pv: &PvResult, generated: &str, is_candidate: bool,
-             variant_label: Option<&str>) -> Vec<String> {
-    let mut r = common(bundle, pv, generated, is_candidate, variant_label, "LOT_TOTAL");
+             variant_label: Option<&str>, sub: &Submission) -> Vec<String> {
+    let mut r = common(bundle, pv, generated, is_candidate, variant_label, "LOT_TOTAL", sub);
     let sum_kw: f64 = pv.arrays.iter().map(|a| a.system_capacity_kw).sum();
     let sum_ac: f64 = pv.arrays.iter().filter_map(|a| a.ac_annual).sum();
+    let panels: Vec<u32> = pv.arrays.iter().filter_map(|a| panels_for(bundle, a)).collect();
     r.extend([
         blank(),
+        if panels.is_empty() { blank() } else { panels.iter().sum::<u32>().to_string() },
         sum_kw.to_string(),
         blank(), blank(), blank(), blank(),
         blank(), blank(), blank(),
@@ -235,15 +257,30 @@ fn total_row(bundle: &LotBundle, pv: &PvResult, generated: &str, is_candidate: b
     r
 }
 
+/// Identity of one Save in the central ledger: `<lot>-<job name>-v<N>`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Submission {
+    pub key: String,
+    pub version: u32,
+}
+
+/// Rows only (no BOM, no header) — what gets appended to `all_submissions.csv`.
+fn rows(bundle: &LotBundle, pv: &PvResult, is_candidate: bool,
+        variant_label: Option<&str>, generated: &str, sub: &Submission) -> String {
+    let mut out = String::new();
+    for (i, a) in pv.arrays.iter().enumerate() {
+        out.push_str(&line(&array_row(bundle, pv, a, i, generated, is_candidate, variant_label, sub)));
+    }
+    out.push_str(&line(&total_row(bundle, pv, generated, is_candidate, variant_label, sub)));
+    out
+}
+
 /// Render the lot CSV to a string (BOM included).
 pub fn render(bundle: &LotBundle, pv: &PvResult, is_candidate: bool,
-              variant_label: Option<&str>, generated: &str) -> String {
+              variant_label: Option<&str>, generated: &str, sub: &Submission) -> String {
     let mut out = String::from("\u{feff}");
     out.push_str(&line(&header()));
-    for (i, a) in pv.arrays.iter().enumerate() {
-        out.push_str(&line(&array_row(bundle, pv, a, i, generated, is_candidate, variant_label)));
-    }
-    out.push_str(&line(&total_row(bundle, pv, generated, is_candidate, variant_label)));
+    out.push_str(&rows(bundle, pv, is_candidate, variant_label, generated, sub));
     out
 }
 
@@ -255,14 +292,87 @@ pub fn write_lot_csv(
     pv: &PvResult,
     is_candidate: bool,
     variant_label: Option<&str>,
+    sub: &Submission,
 ) -> Result<PathBuf> {
     let (dir, stem) = lot_paths(root, bundle, variant_label);
     fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
     let path = dir.join(format!("{stem}.csv"));
     let generated = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
-    let body = render(bundle, pv, is_candidate, variant_label, &generated);
+    let body = render(bundle, pv, is_candidate, variant_label, &generated, sub);
     let mut f = fs::File::create(&path).with_context(|| format!("could not write {}", path.display()))?;
     f.write_all(body.as_bytes())?;
+    f.flush()?;
+    Ok(path)
+}
+
+// ── central ledger ──────────────────────────────────────────────────────────
+
+const DEFAULT_LEDGER_DIR: &str = r"I:\Inventory and Purchasing\pv_watts_db";
+const MASTER_FILE: &str = "all_submissions.csv";
+
+/// Where submissions are filed centrally. Override with PVWATTS_LEDGER_DIR.
+pub fn ledger_dir() -> PathBuf {
+    std::env::var("PVWATTS_LEDGER_DIR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_LEDGER_DIR))
+}
+
+/// `<lot code>-<job name>` — the part of the key that identifies the lot.
+fn key_base(bundle: &LotBundle) -> String {
+    let lot = bundle.lot.as_deref().filter(|s| !s.trim().is_empty())
+        .or(bundle.lot_addr.as_deref()).unwrap_or("UNKNOWN_LOT");
+    let job = bundle.job_name.as_deref().filter(|s| !s.trim().is_empty())
+        .or(bundle.job.as_deref()).unwrap_or("UNKNOWN_JOB");
+    format!("{}-{}", safe(lot), safe(job))
+}
+
+/// Next version for this lot+job: one past the highest `<base>-v<N>.csv` already
+/// filed. An unreadable ledger folder yields v1; the write then reports why.
+pub fn next_submission(ledger: &Path, bundle: &LotBundle) -> Submission {
+    let base = key_base(bundle);
+    let prefix = format!("{base}-v");
+    let mut max = 0u32;
+    if let Ok(rd) = fs::read_dir(ledger) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if let Some(rest) = name.strip_prefix(&prefix) {
+                if let Some(n) = rest.strip_suffix(".csv").and_then(|n| n.parse::<u32>().ok()) {
+                    max = max.max(n);
+                }
+            }
+        }
+    }
+    let version = max + 1;
+    Submission { key: format!("{prefix}{version}"), version }
+}
+
+/// File this Save in the ledger: its own `<key>.csv` plus rows appended to the
+/// master. Returns the per-submission file path.
+pub fn write_ledger(
+    ledger: &Path,
+    bundle: &LotBundle,
+    pv: &PvResult,
+    is_candidate: bool,
+    variant_label: Option<&str>,
+    sub: &Submission,
+) -> Result<PathBuf> {
+    fs::create_dir_all(ledger).with_context(|| format!("ledger folder unavailable: {}", ledger.display()))?;
+    let generated = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let path = ledger.join(format!("{}.csv", sub.key));
+    let body = render(bundle, pv, is_candidate, variant_label, &generated, sub);
+    fs::write(&path, body.as_bytes()).with_context(|| format!("could not write {}", path.display()))?;
+
+    let master = ledger.join(MASTER_FILE);
+    let fresh = fs::metadata(&master).map(|m| m.len() == 0).unwrap_or(true);
+    let mut f = fs::OpenOptions::new().create(true).append(true).open(&master)
+        .with_context(|| format!("could not append {}", master.display()))?;
+    if fresh {
+        f.write_all("\u{feff}".as_bytes())?;
+        f.write_all(line(&header()).as_bytes())?;
+    }
+    f.write_all(rows(bundle, pv, is_candidate, variant_label, &generated, sub).as_bytes())?;
     f.flush()?;
     Ok(path)
 }
@@ -302,21 +412,54 @@ mod tests {
 
     /// Header and rows are built by separate code paths; if they drift the file
     /// silently misaligns, so pin the width.
+    fn sub() -> Submission { Submission { key: "425-Job-v1".into(), version: 1 } }
+
     #[test]
     fn every_row_matches_the_header_width() {
         let n = header().len();
         let p = pv(vec![array(), array()]);
         let b = bundle();
         for (i, a) in p.arrays.iter().enumerate() {
-            assert_eq!(array_row(&b, &p, a, i, "now", true, None).len(), n, "array row {i}");
+            assert_eq!(array_row(&b, &p, a, i, "now", true, None, &sub()).len(), n, "array row {i}");
         }
-        assert_eq!(total_row(&b, &p, "now", true, None).len(), n, "total row");
+        assert_eq!(total_row(&b, &p, "now", true, None, &sub()).len(), n, "total row");
+    }
+
+    #[test]
+    fn panels_recovered_from_kw_on_normal_lots_only() {
+        let p = pv(vec![array()]);
+        let mut b = bundle();
+        let h = header();
+        let col = h.iter().position(|c| c == "panels").unwrap();
+        assert_eq!(array_row(&b, &p, &p.arrays[0], 0, "now", true, None, &sub())[col], "");
+        b.options_lot = false; b.wattage = Some(410);
+        assert_eq!(array_row(&b, &p, &p.arrays[0], 0, "now", true, None, &sub())[col], "11");
+        assert_eq!(total_row(&b, &p, "now", true, None, &sub())[col], "11");
+    }
+
+    #[test]
+    fn ledger_versions_count_per_lot_and_job() {
+        let dir = std::env::temp_dir().join(format!("pvw_ledger_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut b = bundle();
+        b.lot = Some("425".into()); b.job_name = Some("Sunset / Phase 2".into());
+        assert_eq!(next_submission(&dir, &b), Submission { key: "425-Sunset _ Phase 2-v1".into(), version: 1 });
+        let p = pv(vec![array()]);
+        let s1 = next_submission(&dir, &b);
+        write_ledger(&dir, &b, &p, true, None, &s1).unwrap();
+        let s2 = next_submission(&dir, &b);
+        assert_eq!(s2.version, 2);
+        write_ledger(&dir, &b, &p, false, Some("8.2 kW"), &s2).unwrap();
+        let master = fs::read_to_string(dir.join(MASTER_FILE)).unwrap();
+        assert_eq!(master.matches("\r\n").count(), 1 + 2 * 2, "header + 2 rows per submission");
+        assert!(dir.join("425-Sunset _ Phase 2-v2.csv").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn totals_sum_the_additive_series_only() {
         let p = pv(vec![array(), array()]);
-        let row = total_row(&bundle(), &p, "now", false, None);
+        let row = total_row(&bundle(), &p, "now", false, None, &sub());
         let h = header();
         let at = |name: &str| row[h.iter().position(|c| c == name).unwrap()].clone();
         assert_eq!(at("dc_system_size_kw"), "9.02");

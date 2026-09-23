@@ -397,7 +397,7 @@ async function commit(id){
   $('#commit-'+id).textContent='saving…';
   try{
     const res=await api('/api/commit',{bundle:b, arrays:S[id].sentArrays, pv, is_candidate:cand, variant_label:variant});
-    $('#commit-'+id).innerHTML = `<span class="tag good">PDF saved</span> ${res.wrote_creatio?`<span class="tag good">Creatio updated (${res.rows} row)</span>`:'<span class="tag">audit only</span>'}<div class="path">${res.pdf_path}</div><div class="path">${res.csv_path||''}</div>`;
+    $('#commit-'+id).innerHTML = `<span class="tag good">PDF saved</span> ${res.wrote_creatio?`<span class="tag good">Creatio updated (${res.rows} row)</span>`:'<span class="tag">audit only</span>'}<div class="path">${res.pdf_path}</div><div class="path">${res.csv_path||''}</div>${res.ledger_path?`<div class="path">${res.ledger_path}</div>`:`<div class="err">Ledger not written (${res.ledger_error||'unknown'}) — lot files are saved; tell Luis the key ${res.submission_key}</div>`}`;
   }catch(e){ $('#commit-'+id).innerHTML='<span class="err">'+e.message+'</span>'; }
 }
 

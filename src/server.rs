@@ -251,11 +251,24 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
     let root = pdf::output_root();
     let path = pdf::write_audit_pdf(&root, &req.bundle, &req.arrays, &req.pv, wrote, req.variant_label.as_deref())?;
     // Same folder, same basename, .csv — every value on the PDF, flat.
-    let csv_path = crate::csv::write_lot_csv(&root, &req.bundle, &req.arrays, &req.pv, wrote, req.variant_label.as_deref())?;
+    let ledger = crate::csv::ledger_dir();
+    let sub = crate::csv::next_submission(&ledger, &req.bundle);
+    let variant = req.variant_label.as_deref();
+    let csv_path = crate::csv::write_lot_csv(&root, &req.bundle, &req.arrays, &req.pv, wrote, variant, &sub)?;
+    // Central ledger (I: drive). Best-effort: a share outage is reported, not fatal —
+    // the lot folder already holds the identical file.
+    let (ledger_path, ledger_error) =
+        match crate::csv::write_ledger(&ledger, &req.bundle, &req.pv, wrote, variant, &sub) {
+            Ok(p) => (Some(p.display().to_string()), None),
+            Err(e) => (None, Some(format!("{e:#}"))),
+        };
     Ok(Json(json!({
         "ok": true,
         "pdf_path": path.display().to_string(),
         "csv_path": csv_path.display().to_string(),
+        "ledger_path": ledger_path,
+        "ledger_error": ledger_error,
+        "submission_key": sub.key,
         "wrote_creatio": wrote,
         "monthly_kwh": monthly_kwh,
         "rows": rows

@@ -871,7 +871,7 @@ mod sample {
 
         let bytes = render(&bundle, &[], &pv, true, None).expect("render");
         std::fs::write(format!("{out}.pdf"), &bytes).expect("write pdf");
-        let csv = crate::csv::render(&bundle, &pv, true, None, "2026-08-27 12:00");
+        let csv = crate::csv::render(&bundle, &pv, true, None, "2026-08-27 12:00", &crate::csv::Submission { key: "sample-v1".into(), version: 1 });
         std::fs::write(format!("{out}.csv"), csv.as_bytes()).expect("write csv");
         eprintln!("wrote {out}.pdf and {out}.csv");
     }
