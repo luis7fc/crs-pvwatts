@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use crate::{creatio, pdf, sidecar};
+use crate::{creatio, folders, pdf, sidecar};
 
 pub struct AppConfig {
     pub creatio_base_url: String,
@@ -43,6 +43,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/options", post(options))
         .route("/api/run", post(run))
         .route("/api/commit", post(commit))
+        .route("/api/pick_folder", post(pick_folder))
         .with_state(state)
 }
 
@@ -231,6 +232,20 @@ struct CommitReq {
 }
 
 async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
+    // Resolve the save folder BEFORE touching Creatio: a lot whose folder can't be
+    // found must not be written back and then left without its documents.
+    let root = pdf::output_root();
+    let ledger = crate::csv::ledger_dir();
+    let Some((community, source)) = folders::community_folder(&root, &ledger, &req.bundle) else {
+        return Ok(Json(json!({
+            "ok": true,
+            "needs_folder": true,
+            "builder": req.bundle.builder,
+            "job_name": req.bundle.job_name,
+        })));
+    };
+    let dir = folders::lot_dir(&community, &req.bundle);
+
     // Creatio FIRST, documents second. Both artifacts state whether the writeback
     // happened, so writing them first can leave a PDF on the I: drive claiming an
     // update that then failed — update_est_kwh raises on rowsAffected == 0
@@ -248,13 +263,11 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
     }
 
     // `wrote`, not `req.is_candidate`: the documents record what actually landed.
-    let root = pdf::output_root();
-    let path = pdf::write_audit_pdf(&root, &req.bundle, &req.arrays, &req.pv, wrote, req.variant_label.as_deref())?;
+    let path = pdf::write_audit_pdf(&dir, &req.bundle, &req.arrays, &req.pv, wrote, req.variant_label.as_deref())?;
     // Same folder, same basename, .csv — every value on the PDF, flat.
-    let ledger = crate::csv::ledger_dir();
     let sub = crate::csv::next_submission(&ledger, &req.bundle);
     let variant = req.variant_label.as_deref();
-    let csv_path = crate::csv::write_lot_csv(&root, &req.bundle, &req.arrays, &req.pv, wrote, variant, &sub)?;
+    let csv_path = crate::csv::write_lot_csv(&dir, &req.bundle, &req.arrays, &req.pv, wrote, variant, &sub)?;
     // Central ledger (I: drive). Best-effort: a share outage is reported, not fatal —
     // the lot folder already holds the identical file.
     let (ledger_path, ledger_error) =
@@ -266,11 +279,51 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
         "ok": true,
         "pdf_path": path.display().to_string(),
         "csv_path": csv_path.display().to_string(),
+        "folder": community.display().to_string(),
+        "folder_source": source.as_str(),
         "ledger_path": ledger_path,
         "ledger_error": ledger_error,
         "submission_key": sub.key,
         "wrote_creatio": wrote,
         "monthly_kwh": monthly_kwh,
         "rows": rows
+    })))
+}
+
+#[derive(Deserialize)]
+struct PickReq {
+    bundle: creatio::LotBundle,
+}
+
+/// Open the native folder dialog on this PC (the server IS the user's PC) and
+/// remember the pick for the lot's community. Cancel -> `picked: false`.
+async fn pick_folder(Json(req): Json<PickReq>) -> Api {
+    let root = pdf::output_root();
+    let start = folders::picker_start(&root, &req.bundle);
+    let title = format!(
+        "Where do PV Watts files go for {} - {}?",
+        req.bundle.builder.as_deref().unwrap_or("this builder"),
+        req.bundle.job_name.as_deref().unwrap_or("this community"),
+    );
+    let picked = tokio::task::spawn_blocking(move || {
+        let mut d = rfd::FileDialog::new().set_title(&title);
+        if let Some(s) = start {
+            d = d.set_directory(s);
+        }
+        d.pick_folder()
+    })
+    .await?;
+    let Some(folder) = picked else {
+        return Ok(Json(json!({"ok": true, "picked": false})));
+    };
+    // Kept for this session regardless; the shared list is best-effort.
+    let save_error = folders::save_mapping(&crate::csv::ledger_dir(), &req.bundle, &folder)
+        .err()
+        .map(|e| format!("{e:#}"));
+    Ok(Json(json!({
+        "ok": true,
+        "picked": true,
+        "folder": folder.display().to_string(),
+        "save_error": save_error,
     })))
 }

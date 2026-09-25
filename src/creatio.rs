@@ -96,6 +96,9 @@ pub struct LotBundle {
     pub plan: Option<String>,
     pub builder: Option<String>,   // Opportunity.Account  -> save-path {builder}
     pub job_name: Option<String>,  // Opportunity.Title    -> save-path {job_name}
+    /// Opportunity GUID — the key the save-folder mapping is filed under.
+    #[serde(default)]
+    pub community_id: Option<String>,
     pub system: Option<SystemDetail>,
     pub system_count: usize,       // >1 would be unusual (multi-array not modeled in Creatio)
     /// True when the lot takes the options branch: no committed system row, OR a
@@ -308,6 +311,7 @@ impl Session {
             plan: lot.plan.clone(),
             builder,
             job_name,
+            community_id: lot.community_id.clone(),
             system,
             system_count,
             options_lot,

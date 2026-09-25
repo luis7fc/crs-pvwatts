@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::creatio::LotBundle;
-use crate::pdf::{lot_paths, safe};
+use crate::pdf::{lot_stem, safe};
 use crate::sidecar::{ArrayInput, PvArray, PvResult};
 
 const MONTH_KEYS: [&str; 12] = [
@@ -286,7 +286,7 @@ pub fn render(bundle: &LotBundle, pv: &PvResult, is_candidate: bool,
 
 /// Write the lot CSV beside the audit PDF. Returns the file path written.
 pub fn write_lot_csv(
-    root: &Path,
+    dir: &Path,
     bundle: &LotBundle,
     _arrays: &[ArrayInput],
     pv: &PvResult,
@@ -294,9 +294,7 @@ pub fn write_lot_csv(
     variant_label: Option<&str>,
     sub: &Submission,
 ) -> Result<PathBuf> {
-    let (dir, stem) = lot_paths(root, bundle, variant_label);
-    fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
-    let path = dir.join(format!("{stem}.csv"));
+    let path = dir.join(format!("{}.csv", lot_stem(bundle, variant_label)));
     let generated = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
     let body = render(bundle, pv, is_candidate, variant_label, &generated, sub);
     let mut f = fs::File::create(&path).with_context(|| format!("could not write {}", path.display()))?;
@@ -384,7 +382,7 @@ mod tests {
     fn bundle() -> LotBundle {
         LotBundle {
             lot_id: "id".into(), job: None, lot: None, lot_addr: None, zip: None,
-            plan: None, builder: None, job_name: None, system: None,
+            plan: None, builder: None, job_name: None, community_id: None, system: None,
             system_count: 0, options_lot: true, inverter_efficiency: None, wattage: None,
         }
     }

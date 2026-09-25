@@ -19,3 +19,5 @@ futures = "0.3"
 # secrets (Creatio password + sidecar key) live in the OS credential vault:
 # Windows Credential Manager (DPAPI-encrypted per user) / macOS Keychain for dev.
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# native "choose folder" dialog when a community has no known save folder
+rfd = "0.15"

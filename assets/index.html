@@ -396,8 +396,34 @@ async function commit(id){
   if(cand && !confirm(`Write ${pv.lot_total_kwh.toLocaleString()} kWh/yr + ${Math.round(pv.lot_total_kwh/12).toLocaleString()} kWh/mo to Creatio for lot ${b.lot}?\nThis updates the live record and removes the lot from the pool.`)) return;
   $('#commit-'+id).textContent='saving…';
   try{
-    const res=await api('/api/commit',{bundle:b, arrays:S[id].sentArrays, pv, is_candidate:cand, variant_label:variant});
-    $('#commit-'+id).innerHTML = `<span class="tag good">PDF saved</span> ${res.wrote_creatio?`<span class="tag good">Creatio updated (${res.rows} row)</span>`:'<span class="tag">audit only</span>'}<div class="path">${res.pdf_path}</div><div class="path">${res.csv_path||''}</div>${res.ledger_path?`<div class="path">${res.ledger_path}</div>`:`<div class="err">Ledger not written (${res.ledger_error||'unknown'}) — lot files are saved; tell Luis the key ${res.submission_key}</div>`}`;
+    const body={bundle:b, arrays:S[id].sentArrays, pv, is_candidate:cand, variant_label:variant};
+    let res=await api('/api/commit',body);
+    if(res.needs_folder){
+      // No known folder for this community — nothing was saved or written yet.
+      const pick=await pickFolder(id,`No folder found for ${escapeHtml(b.builder||'?')} / ${escapeHtml(b.job_name||'?')}.`);
+      if(!pick) return;
+      $('#commit-'+id).textContent='saving…';
+      res=await api('/api/commit',body);
+      if(res.needs_folder) throw new Error('the chosen folder is no longer reachable — try again');
+    }
+    $('#commit-'+id).innerHTML = `<span class="tag good">PDF saved</span> ${res.wrote_creatio?`<span class="tag good">Creatio updated (${res.rows} row)</span>`:'<span class="tag">audit only</span>'}<div class="path">${res.pdf_path}</div><div class="path">${res.csv_path||''}</div>${res.ledger_path?`<div class="path">${res.ledger_path}</div>`:`<div class="err">Ledger not written (${res.ledger_error||'unknown'}) — lot files are saved; tell Luis the key ${res.submission_key}</div>`}<div class="hint">Community folder (${res.folder_source}): ${escapeHtml(res.folder)} · <a href="#" onclick="changeFolder('${id}');return false">change for next time</a></div>`;
+  }catch(e){ $('#commit-'+id).innerHTML='<span class="err">'+e.message+'</span>'; }
+}
+
+// Opens the Windows "choose folder" dialog (it may appear behind this window —
+// check the taskbar). The pick is remembered for the community, for everyone.
+async function pickFolder(id,why){
+  $('#commit-'+id).innerHTML=`<span class="hint">${why} Choose where to save in the folder window that just opened (check the taskbar if you don't see it).</span>`;
+  const r=await api('/api/pick_folder',{bundle:S[id].bundle});
+  if(!r.picked){ $('#commit-'+id).innerHTML='<span class="err">No folder chosen — nothing was saved and Creatio was not updated.</span>'; return null; }
+  if(r.save_error) console.warn('folder remembered for this session only:', r.save_error);
+  return r.folder;
+}
+
+async function changeFolder(id){
+  try{
+    const f=await pickFolder(id,'Changing the saved folder for this community.');
+    if(f) $('#commit-'+id).innerHTML=`<span class="tag good">Folder saved</span> <div class="path">${escapeHtml(f)}</div><div class="hint">Used from the next save on; files already saved were not moved.</div>`;
   }catch(e){ $('#commit-'+id).innerHTML='<span class="err">'+e.message+'</span>'; }
 }
 

@@ -5,6 +5,7 @@
 //!   sidecar.rs  — sidecar client (PVWatts + parse-assist; the only open-net dep)
 //!   pdf.rs      — per-lot audit PDF (NREL results-page clone) -> I: drive
 //!   csv.rs      — per-lot CSV of every value on that PDF, written beside it
+//!   folders.rs  — which EXISTING folder a lot saves to (saved / template / user pick)
 //!   server.rs   — axum: serves the SPA + JSON API
 //!
 //! Runs on the coworker's PC: starts a localhost server and opens the browser.
@@ -16,6 +17,7 @@ mod calc;
 mod config;
 mod creatio;
 mod csv;
+mod folders;
 mod pdf;
 mod server;
 mod sidecar;

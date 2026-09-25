@@ -2,10 +2,11 @@
 //! modelled array, plus a CRS summary page carrying the lot roll-up and the
 //! Creatio inputs used (no creds). Written to the mapped I: drive.
 //!
-//! Path template (from the business spec):
-//!   {root}\{builder}\{job_name}\Consultations\{lot_addr}\PV_WATTS_{lot_addr}.pdf
-//! Missing folders are created. `root` defaults to the I: Production path on
-//! Windows; override with PVWATTS_OUTPUT_ROOT for dev on any OS.
+//! Written as PV_WATTS_{lot_addr}.pdf into the folder `folders::resolve` picked
+//! (saved mapping, else {root}\{builder}\{job_name} if it exists, else the user
+//! chooses). Nothing is ever created here — a missing folder is the user's call.
+//! `root` defaults to the I: Production path on Windows; override with
+//! PVWATTS_OUTPUT_ROOT for dev on any OS.
 //!
 //! LAYOUT: every coordinate below was measured off a real PVWatts print
 //! (NREL results page -> Chrome print-to-PDF, US Letter). Units are PDF points
@@ -150,17 +151,13 @@ pub fn safe(component: &str) -> String {
     if t.is_empty() { "UNKNOWN".to_string() } else { t.to_string() }
 }
 
-/// The lot's output directory, and the stem shared by the PDF and the CSV.
-pub fn lot_paths(root: &Path, bundle: &LotBundle, variant_label: Option<&str>) -> (PathBuf, String) {
-    let builder = safe(bundle.builder.as_deref().unwrap_or("UNKNOWN_BUILDER"));
-    let job_name = safe(bundle.job_name.as_deref().unwrap_or("UNKNOWN_JOB"));
+/// The basename shared by the PDF and the CSV.
+pub fn lot_stem(bundle: &LotBundle, variant_label: Option<&str>) -> String {
     let lot_addr = safe(bundle.lot_addr.as_deref().unwrap_or("UNKNOWN_LOT"));
-    let dir = root.join(builder).join(job_name).join("Consultations").join(&lot_addr);
-    let stem = match variant_label {
+    match variant_label {
         Some(v) => format!("PV_WATTS_{}_{}", lot_addr, safe(v)),
         None => format!("PV_WATTS_{lot_addr}"),
-    };
-    (dir, stem)
+    }
 }
 
 // ── NREL sidebar boilerplate (verbatim from the results page) ───────────────
@@ -685,19 +682,17 @@ pub fn render(
     Ok(buf.into_inner()?)
 }
 
-/// Build the audit PDF and write it under the lot's Consultations folder.
+/// Build the audit PDF and write it into `dir` (must already exist).
 /// Returns the file path written.
 pub fn write_audit_pdf(
-    root: &Path,
+    dir: &Path,
     bundle: &LotBundle,
     arrays: &[ArrayInput],
     pv: &PvResult,
     is_candidate: bool,
     variant_label: Option<&str>,
 ) -> Result<PathBuf> {
-    let (dir, stem) = lot_paths(root, bundle, variant_label);
-    fs::create_dir_all(&dir).with_context(|| format!("could not create {}", dir.display()))?;
-    let path = dir.join(format!("{stem}.pdf"));
+    let path = dir.join(format!("{}.pdf", lot_stem(bundle, variant_label)));
 
     let bytes = render(bundle, arrays, pv, is_candidate, variant_label)?;
     let file = fs::File::create(&path).with_context(|| format!("could not write {}", path.display()))?;
@@ -752,7 +747,7 @@ mod sample {
         for n in [0usize, 1, 3] {
             let bundle = LotBundle {
                 lot_id: "id".into(), job: None, lot: None, lot_addr: None, zip: None,
-                plan: None, builder: None, job_name: None, system: None,
+                plan: None, builder: None, job_name: None, community_id: None, system: None,
                 system_count: 0, options_lot: true, inverter_efficiency: None, wattage: None,
             };
             let pv = PvResult {
@@ -789,6 +784,7 @@ mod sample {
             plan: Some("9D-R".into()),
             builder: Some("Castle & Cooke".into()),
             job_name: Some("Highgate 65 Series".into()),
+            community_id: None,
             system: Some(SystemDetail {
                 name: Some("Lot 3 system".into()),
                 panel_model: Some("Q Cell 410".into()),
