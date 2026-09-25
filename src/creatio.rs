@@ -355,9 +355,12 @@ impl Session {
                     "expressionType": 2,
                     "parameter": { "dataValueType": DVT_INTEGER, "value": kwh }
                 },
+                // SMEstimatedMonthlyKwHProduction is a TEXT column in Creatio —
+                // an Integer parameter fails the whole update with
+                // DataTypeMismatchException (seen live 2026-09-25).
                 MONTHLY_KWH_FIELD: {
                     "expressionType": 2,
-                    "parameter": { "dataValueType": DVT_INTEGER, "value": monthly_kwh }
+                    "parameter": { "dataValueType": DVT_TEXT, "value": monthly_kwh.to_string() }
                 }
             }},
             "filters": primary_id_filter(lot_id),
