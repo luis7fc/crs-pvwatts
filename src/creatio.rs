@@ -491,15 +491,19 @@ fn field<'a>(row: &'a Value, key: &str) -> &'a Value {
     row.get(key).unwrap_or(&Value::Null)
 }
 
+/// Every text value read from Creatio passes through here, trimmed: fields are
+/// free text and carry stray whitespace (UsrZipCode ' 95330' on 70924-011/333
+/// broke the sidecar geocoder). Whitespace-only counts as absent.
+fn clean(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_string())
+}
+
 /// Display value: lookup `{value,displayValue}` -> displayValue; bare string -> itself.
 fn disp(v: &Value) -> Option<String> {
     match v {
-        Value::Object(m) => m
-            .get("displayValue")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
-        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        Value::Object(m) => m.get("displayValue").and_then(Value::as_str).and_then(clean),
+        Value::String(s) => clean(s),
         _ => None,
     }
 }
@@ -507,11 +511,7 @@ fn disp(v: &Value) -> Option<String> {
 /// GUID from a lookup value.
 fn guid(v: &Value) -> Option<String> {
     match v {
-        Value::Object(m) => m
-            .get("value")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
+        Value::Object(m) => m.get("value").and_then(Value::as_str).and_then(clean),
         _ => None,
     }
 }
@@ -520,23 +520,40 @@ fn guid(v: &Value) -> Option<String> {
 fn blank(v: &Value) -> bool {
     match v {
         Value::Null => true,
-        Value::String(s) => s.is_empty() || s == "0",
+        Value::String(s) => { let t = s.trim(); t.is_empty() || t == "0" }
         Value::Number(n) => n.as_f64().map_or(true, |f| f == 0.0),
         Value::Object(_) => disp(v).is_none(),
         _ => false,
     }
 }
 
+/// Number, or a number stored as text (trimmed).
 fn num(v: &Value) -> Option<f64> {
-    v.as_f64()
+    v.as_f64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
 }
 
 fn int(v: &Value) -> Option<u32> {
     v.as_u64()
         .map(|n| n as u32)
-        .or_else(|| v.as_f64().map(|f| f as u32))
+        .or_else(|| num(v).map(|f| f as u32))
 }
 
 fn truncate(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+
+    #[test]
+    fn every_read_is_trimmed() {
+        assert_eq!(disp(&json!(" 95330")), Some("95330".into()));
+        assert_eq!(disp(&json!({"value": " g ", "displayValue": " KB Home  "})), Some("KB Home".into()));
+        assert_eq!(guid(&json!({"value": " abc-1 "})), Some("abc-1".into()));
+        assert_eq!(disp(&json!("   ")), None);
+        assert_eq!(num(&json!(" 97 ")), Some(97.0));
+        assert_eq!(int(&json!(" 12")), Some(12));
+        assert!(blank(&json!(" 0 ")));
+    }
 }

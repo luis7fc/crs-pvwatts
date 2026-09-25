@@ -230,6 +230,7 @@ impl Sidecar {
 
     /// Run PVWatts for a lot's arrays via the sidecar. Returns per-array + summed kWh.
     pub async fn run_pvwatts(&self, zip: &str, inv_eff: f64, arrays: &[ArrayInput]) -> Result<PvResult> {
+        let zip = clean_zip(zip);
         let mut body = json!({ "zip": zip, "inv_eff": inv_eff, "arrays": arrays });
         // Dev convenience: pass a local NREL key if present. In prod the sidecar's
         // Render env NREL_API_KEY is used and the exe sends no key.
@@ -260,5 +261,26 @@ impl Sidecar {
             bail!("sidecar {} {}: {}", path, status, text.chars().take(600).collect::<String>());
         }
         resp.json::<T>().await.with_context(|| format!("sidecar {path} returned unexpected JSON"))
+    }
+}
+
+/// Creatio's UsrZipCode is free text: seen with a leading space (' 95330',
+/// 70924-011/333), and ZIP+4 is possible. The sidecar's geocoder wants the bare
+/// 5-digit ZIP and reports anything else as an opaque 500, so normalise here.
+pub fn clean_zip(zip: &str) -> String {
+    let z = zip.trim();
+    let digits: String = z.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.len() >= 5 { digits[..5].to_string() } else { z.to_string() }
+}
+
+#[cfg(test)]
+mod zip_tests {
+    use super::clean_zip;
+
+    #[test]
+    fn zip_is_trimmed_and_cut_to_five() {
+        assert_eq!(clean_zip(" 95330"), "95330");
+        assert_eq!(clean_zip("95330-1234 "), "95330");
+        assert_eq!(clean_zip("abc"), "abc");
     }
 }
