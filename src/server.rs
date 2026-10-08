@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -77,7 +77,7 @@ async fn get_settings(State(st): State<AppState>) -> Json<Value> {
     let c = st.cfg.lock().await;
     let key_set = st.sidecar.lock().await.is_some();
     Json(json!({
-        "ok": true, "configured": key_set, "key_set": key_set,
+        "ok": true, "configured": key_set, "key_set": key_set, "version": crate::sidecar::CLIENT_VERSION,
         "sidecar_url": c.sidecar_base_url, "creatio_base_url": c.creatio_base_url, "output_root": c.output_root,
     }))
 }
@@ -162,10 +162,17 @@ async fn logout(State(st): State<AppState>, Json(req): Json<LogoutReq>) -> Api {
 }
 
 // ── data ────────────────────────────────────────────────────────────────────
-async fn pool(State(st): State<AppState>) -> Api {
+#[derive(Deserialize)]
+struct PoolReq {
+    /// "All lots" switch: every awaiting lot, not just the user's communities.
+    #[serde(default)]
+    all: bool,
+}
+
+async fn pool(State(st): State<AppState>, Query(req): Query<PoolReq>) -> Api {
     let guard = st.session.lock().await;
     let sess = guard.as_ref().ok_or_else(|| anyhow::anyhow!("not logged in"))?;
-    let lots = sess.fetch_pool().await?;
+    let lots = sess.fetch_pool(req.all).await?;
     Ok(Json(json!({"ok": true, "lots": lots})))
 }
 

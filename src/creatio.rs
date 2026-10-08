@@ -11,6 +11,8 @@
 //! Memory: we borrow directly into the parsed response (`&Value` rows) and only
 //! allocate owned structs at the boundary — no cloning of whole row vectors.
 
+use std::collections::HashSet;
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -19,6 +21,11 @@ use crate::calc;
 
 const DATA_SERVICE: &str = "/0/DataService/json/SyncReply/SelectQuery";
 const UPDATE_SERVICE: &str = "/0/DataService/json/SyncReply/UpdateQuery";
+const USER_INFO_SERVICE: &str = "/0/ServiceModel/UserInfoService.svc/GetCurrentUserInfo";
+/// Lot channels (UsrChannel display values) that belong in the pool.
+const POOL_CHANNELS: &[&str] = &["Integrated", "Cash Only"];
+/// OData page size for the Buyer Consultant community list.
+const ODATA_PAGE: usize = 1000;
 const DVT_INTEGER: i64 = 4; // CrsEstAnnualKwhProductionLot writeback
 /// UsrLotRecords column behind the "Estimated Monthly kWh Production" field on the
 /// lot page. Written alongside the annual total on commit: the average of the
@@ -57,6 +64,7 @@ pub struct Session {
     client: reqwest::Client,
     base_url: String,
     bpmcsrf: String,
+    username: String, // Creatio login — fallback key for the current-contact lookup
 }
 
 /// A selectable lot from the pool (what the UI lists for the team to pick).
@@ -139,7 +147,12 @@ impl Session {
             .map(|c| c.value().to_string())
             .context("login returned 200 but no BPMCSRF cookie (bad/expired credentials?)")?;
 
-        Ok(Session { client, base_url: cfg.base_url.clone(), bpmcsrf })
+        Ok(Session {
+            client,
+            base_url: cfg.base_url.clone(),
+            bpmcsrf,
+            username: cfg.username.trim().to_string(),
+        })
     }
 
     /// Best-effort logout — keep the shared license pool clean. Never panics.
@@ -172,14 +185,126 @@ impl Session {
         Ok(data)
     }
 
+    /// Run an OData v4 GET (`path` starts with /0/odata/). Same error rule as
+    /// `select`: log the body before failing.
+    async fn odata_get(&self, path: &str, query: &[(&str, String)]) -> Result<Value> {
+        let url = format!("{}{}", self.base_url, path);
+        let resp = self
+            .client
+            .get(&url)
+            .query(query)
+            .header("BPMCSRF", &self.bpmcsrf)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("OData request failed to send")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            bail!("OData HTTP {}: {}", status, &body[..body.len().min(1500)]);
+        }
+        resp.json().await.context("OData returned non-JSON")
+    }
+
+    /// Contact GUID of the logged-in user — Creatio's "Current contact".
+    /// GetCurrentUserInfo first (works for any login); if it carries no contactId,
+    /// the user table by login name (SysAdminUnit.Name, as creatio_read_email.py).
+    async fn current_contact_id(&self) -> Result<String> {
+        let url = format!("{}{}", self.base_url, USER_INFO_SERVICE);
+        let resp = self
+            .client
+            .post(&url)
+            .header("BPMCSRF", &self.bpmcsrf)
+            .header("Accept", "application/json")
+            .json(&json!({}))
+            .send()
+            .await
+            .context("GetCurrentUserInfo request failed to send")?;
+        if resp.status().is_success() {
+            let info: Value = resp.json().await.unwrap_or(Value::Null);
+            let id = info
+                .pointer("/userInfo/contactId")
+                .and_then(Value::as_str)
+                .and_then(clean)
+                .filter(|s| !is_empty_guid(s));
+            if let Some(id) = id {
+                return Ok(id.to_lowercase());
+            }
+        }
+
+        let login = self.username.replace('\'', "''");
+        let data = self
+            .odata_get(
+                "/0/odata/SysAdminUnit",
+                &[
+                    ("$filter", format!("Name eq '{login}' and SysAdminUnitTypeValue eq 4")),
+                    ("$select", "Id,ContactId".to_string()),
+                    ("$top", "1".to_string()),
+                ],
+            )
+            .await?;
+        data.pointer("/value/0/ContactId")
+            .and_then(Value::as_str)
+            .and_then(clean)
+            .filter(|s| !is_empty_guid(s))
+            .map(|s| s.to_lowercase())
+            .with_context(|| format!("no Creatio contact linked to login {}", self.username))
+    }
+
+    /// GUIDs (lowercase) of every Opportunity whose Buyer Consultant
+    /// (UsrBuyerConsultant) is `contact_id`. Paged by Id so no row is skipped.
+    async fn buyer_consultant_communities(&self, contact_id: &str) -> Result<HashSet<String>> {
+        let mut ids = HashSet::new();
+        let mut skip = 0usize;
+        loop {
+            let data = self
+                .odata_get(
+                    "/0/odata/Opportunity",
+                    &[
+                        ("$filter", format!("UsrBuyerConsultant/Id eq {contact_id}")),
+                        ("$select", "Id".to_string()),
+                        ("$orderby", "Id".to_string()),
+                        ("$top", ODATA_PAGE.to_string()),
+                        ("$skip", skip.to_string()),
+                    ],
+                )
+                .await?;
+            let rows = data.get("value").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+            ids.extend(
+                rows.iter()
+                    .filter_map(|o| o.get("Id").and_then(Value::as_str).and_then(clean))
+                    .map(|s| s.to_lowercase()),
+            );
+            if rows.len() < ODATA_PAGE {
+                break;
+            }
+            skip += ODATA_PAGE;
+        }
+        Ok(ids)
+    }
+
+    /// The selectable lot pool. `all_lots` = false (default): only lots whose
+    /// community has the logged-in user as Buyer Consultant. `all_lots` = true:
+    /// every awaiting lot — the "All lots" switch, for managers and cover.
+    pub async fn fetch_pool(&self, all_lots: bool) -> Result<Vec<PoolLot>> {
+        if all_lots {
+            return self.fetch_pool_in(None).await;
+        }
+        // "Community.Buyer Consultant = Current contact"
+        let contact_id = self.current_contact_id().await?;
+        let my_communities = self.buyer_consultant_communities(&contact_id).await?;
+        self.fetch_pool_in(Some(&my_communities)).await
+    }
+
     /// Fetch the FULL selectable lot pool by paging through all lot records.
-    /// Predicate: UsrChannel=Integrated AND UsrBuyerInfoReceived set AND
-    /// SMConsultationComplete blank AND CrsEstAnnualKwhProductionLot blank/0.
+    /// Predicate: UsrChannel in POOL_CHANNELS AND UsrBuyerInfoReceived set AND
+    /// SMConsultationComplete blank AND CrsEstAnnualKwhProductionLot blank/0 AND
+    /// (when `communities` is given) the lot's community is in that set.
     ///
     /// Filtered CLIENT-SIDE (the DataService server-side null/lookup filters 500
     /// or silently no-op — vault-confirmed). DataService caps rowCount, so we page
     /// with rowsOffset ordered by Id. ~100k lots -> ~12s, ~281 pending.
-    pub async fn fetch_pool(&self) -> Result<Vec<PoolLot>> {
+    async fn fetch_pool_in(&self, communities: Option<&HashSet<String>>) -> Result<Vec<PoolLot>> {
         const COLS: &[&str] = &[
             "Id", "UsrJobNumber", "UsrName", "UsrLotNumberPlusAddress", "UsrZipCode",
             "UsrLot_PlanElevation", "UsrLot_Community", "UsrChannel",
@@ -204,8 +329,13 @@ impl Session {
                     done = true; // this page is the last
                 }
                 for r in rows {
-                    let channel_ok = disp(field(r, "UsrChannel")).as_deref() == Some("Integrated");
+                    let channel_ok = disp(field(r, "UsrChannel"))
+                        .is_some_and(|c| POOL_CHANNELS.contains(&c.as_str()));
+                    let mine = communities.is_none_or(|set| {
+                        guid(field(r, "UsrLot_Community")).is_some_and(|g| set.contains(&g.to_lowercase()))
+                    });
                     if channel_ok
+                        && mine
                         && !blank(field(r, "UsrBuyerInfoReceived"))
                         && blank(field(r, "SMConsultationComplete"))
                         && blank(field(r, "CrsEstAnnualKwhProductionLot"))
@@ -519,6 +649,11 @@ fn guid(v: &Value) -> Option<String> {
     }
 }
 
+/// Creatio's unset-lookup sentinel (all zeros) — truthy as a string, means none.
+fn is_empty_guid(s: &str) -> bool {
+    s.chars().all(|c| c == '0' || c == '-')
+}
+
 /// Blank = empty date/string, 0/absent integer, or a lookup with no displayValue.
 fn blank(v: &Value) -> bool {
     match v {
@@ -558,5 +693,86 @@ mod read_tests {
         assert_eq!(num(&json!(" 97 ")), Some(97.0));
         assert_eq!(int(&json!(" 12")), Some(12));
         assert!(blank(&json!(" 0 ")));
+    }
+
+    /// Live, READ-ONLY: the pool as another Buyer Consultant would see it, without
+    /// their login. Uses the saved login (pvwatts.env username + OS vault password).
+    ///   POOL_AS="<Full Name>" cargo test pool_as_contact -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn pool_as_contact() {
+        let name = std::env::var("POOL_AS").expect("set POOL_AS to a contact's full name");
+        let username = std::env::var("CREATIO_USERNAME").expect("CREATIO_USERNAME not set");
+        let cfg = CreatioConfig {
+            base_url: std::env::var("CREATIO_BASE_URL")
+                .unwrap_or_else(|_| "https://citadelrs.creatio.com".to_string()),
+            password: crate::config::get_creatio_password(&username).expect("no saved password"),
+            username,
+        };
+        let sess = Session::login(&cfg).await.expect("login");
+        let result = async {
+            let found = sess
+                .odata_get(
+                    "/0/odata/Contact",
+                    &[
+                        ("$filter", format!("Name eq '{}'", name.replace('\'', "''"))),
+                        ("$select", "Id,Name".to_string()),
+                        ("$top", "5".to_string()),
+                    ],
+                )
+                .await?;
+            let ids: Vec<String> = found["value"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|c| c["Id"].as_str().map(str::to_lowercase))
+                .collect();
+            println!("contacts named {name:?}: {}", ids.len());
+            if ids.is_empty() {
+                bail!("no contact named {name:?}");
+            }
+            // Duplicate names exist — report every match, never pick one silently.
+            let all = sess.fetch_pool_in(None).await?;
+            println!("all lots: {}", all.len());
+            for id in &ids {
+                let login = sess
+                    .odata_get(
+                        "/0/odata/SysAdminUnit",
+                        &[
+                            ("$filter", format!("Contact/Id eq {id} and SysAdminUnitTypeValue eq 4")),
+                            ("$select", "Id,Active".to_string()),
+                            ("$top", "1".to_string()),
+                        ],
+                    )
+                    .await?;
+                let has_login = login["value"].as_array().is_some_and(|v| !v.is_empty());
+                let communities = sess.buyer_consultant_communities(id).await?;
+                let mine = sess.fetch_pool_in(Some(&communities)).await?; // the real filter path
+                println!(
+                    "\ncontact ...{}: Creatio login: {has_login}, Buyer Consultant on {} communities, pool: {} lots",
+                    &id[id.len() - 6..],
+                    communities.len(),
+                    mine.len()
+                );
+                let mut by_comm = std::collections::BTreeMap::<String, usize>::new();
+                for l in &mine {
+                    *by_comm.entry(l.community.clone().unwrap_or_default()).or_default() += 1;
+                }
+                for (c, n) in by_comm {
+                    println!("  {n:>4}  {c}");
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        sess.logout().await;
+        result.expect("pool_as_contact");
+    }
+
+    #[test]
+    fn zero_guid_is_no_contact() {
+        assert!(is_empty_guid("00000000-0000-0000-0000-000000000000"));
+        assert!(!is_empty_guid("1ced1e2c-c6ba-4295-9587-e453ee88216d"));
     }
 }

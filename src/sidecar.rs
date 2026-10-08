@@ -203,6 +203,14 @@ pub struct ParseResult {
     pub raw_block: String,
 }
 
+/// This build's version, sent on every sidecar call as `x-client-version`. The
+/// sidecar answers 426 when it is below its `PVWATTS_MIN_CLIENT`.
+pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Shown to the consultant instead of the raw 426.
+pub const OUT_OF_DATE: &str =
+    "This PVWatts tool is out of date. Get the latest from the I: drive pvwatts folder.";
+
 impl Sidecar {
     pub fn new(base: String, api_key: String) -> Result<Self> {
         let client = reqwest::Client::builder()
@@ -251,12 +259,16 @@ impl Sidecar {
             .client
             .post(format!("{}{}", self.base, path))
             .header("x-api-key", &self.api_key)
+            .header("x-client-version", CLIENT_VERSION)
             .json(body)
             .send()
             .await
             .with_context(|| format!("sidecar {path} request failed to send"))?;
         if !resp.status().is_success() {
             let status = resp.status();
+            if status == reqwest::StatusCode::UPGRADE_REQUIRED {
+                bail!("{OUT_OF_DATE}");
+            }
             let text = resp.text().await.unwrap_or_default();
             bail!("sidecar {} {}: {}", path, status, text.chars().take(600).collect::<String>());
         }
@@ -271,6 +283,34 @@ pub fn clean_zip(zip: &str) -> String {
     let z = zip.trim();
     let digits: String = z.chars().take_while(|c| c.is_ascii_digit()).collect();
     if digits.len() >= 5 { digits[..5].to_string() } else { z.to_string() }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn client_version_is_the_crate_version() {
+        assert_eq!(CLIENT_VERSION, "2.1.0");
+    }
+
+    #[tokio::test]
+    async fn http_426_reads_as_out_of_date() {
+        let app = axum::Router::new().route(
+            "/run/parse_system_sizes",
+            axum::routing::post(|headers: axum::http::HeaderMap| async move {
+                assert_eq!(headers.get("x-client-version").unwrap(), CLIENT_VERSION);
+                (axum::http::StatusCode::UPGRADE_REQUIRED, "client too old")
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let sc = Sidecar::new(format!("http://{addr}"), "k".into()).unwrap();
+        let err = sc.parse_system_sizes("P1", "block").await.unwrap_err();
+        assert_eq!(err.to_string(), OUT_OF_DATE);
+    }
 }
 
 #[cfg(test)]

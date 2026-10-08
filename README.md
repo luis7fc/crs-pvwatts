@@ -73,8 +73,11 @@ After that the user just double-clicks the exe → it auto-logs in → pending p
 
 ## Using it
 
-1. **Pool** = lots where `UsrChannel = Integrated`, buyer-info received, not yet
-   consulted, and no estimate yet (the full set, paged from Creatio — ~10s load).
+1. **Pool** = lots where `UsrChannel` is Integrated or Cash Only, buyer-info
+   received, not yet consulted, no estimate yet, and the community's Buyer
+   Consultant is the logged-in user (the full set, paged from Creatio — ~10s load).
+   Tick **All lots** (next to Refresh) to drop the Buyer Consultant rule and see
+   every awaiting lot — for managers and cover. Off by default on every launch.
 2. **Search** box filters the pool by job # / lot # / community (partial).
 3. Pick a lot →
    - **Normal:** committed system → split its panels into arrays (tilt/azimuth).

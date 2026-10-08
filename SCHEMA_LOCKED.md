@@ -5,10 +5,15 @@ All confirmed by read-only probe 2026-07-20. Session hygiene: one login → work
 
 ## 1. The lot pool (what shows in the UI to pick from)
 Query `UsrLotRecords` WHERE:
-- `UsrChannel` **= Integrated**  (lookup GUID `1ced1e2c-c6ba-4295-9587-e453ee88216d`, dataValueType 10)
+- `UsrChannel` **= Integrated or Cash Only**  (lookup GUID `1ced1e2c-c6ba-4295-9587-e453ee88216d`, dataValueType 10) — matched by display value; Cash Only added 2026-09-30
 - `UsrBuyerInfoReceived`  **IS NOT blank**   (buyer info received)
 - `SMConsultationComplete` **IS blank**       (not yet consulted)
 - `CrsEstAnnualKwhProductionLot` **IS blank/0** (no estimate yet — this is our writeback field)
+- `UsrLot_Community` → `Opportunity.UsrBuyerConsultant` **= current contact** (the logged-in user's
+  Contact: `GetCurrentUserInfo` → `userInfo.contactId`, fallback `SysAdminUnit.ContactId` by login). One
+  OData read of `Opportunity?$filter=UsrBuyerConsultant/Id eq <contact>`, then lots are kept client-side
+  by community GUID. Added 2026-09-30. Skipped when the UI's **All lots** switch is on
+  (`GET /api/pool?all=true`), added 2026-10-01.
 
 Validated: 150/2000 have buyer-info; ~85/400 lots are channel=Integrated; full predicate → a real awaiting-consultation set.
 
