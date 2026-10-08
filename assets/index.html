@@ -110,9 +110,19 @@ const $ = s => document.querySelector(s);
 const api = async (path, body) => {
   const r = await fetch(path, {method: body===undefined?'GET':'POST', headers:{'content-type':'application/json'}, body: body===undefined?undefined:JSON.stringify(body)});
   const j = await r.json().catch(()=>({ok:false,error:'bad response'}));
-  if(!r.ok || j.ok===false) throw new Error(j.error || j.detail || ('HTTP '+r.status));
+  if(!r.ok || j.ok===false){
+    const msg = j.error || j.detail || ('HTTP '+r.status);
+    if(/^sidecar \/run\/\S+ (401|403) /.test(msg)) keyRejected();
+    throw new Error(msg);
+  }
   return j;
 };
+// A key can be saved yet stale (left in Credential Manager by an older test),
+// so first-run Settings never shows. When the sidecar refuses it, go there.
+async function keyRejected(){
+  await showSettings();
+  $('#seterr').textContent = "Your sidecar key wasn't accepted. Paste the current key above and click Save.";
+}
 const S = {}; // per-lot ui state keyed by lot_id
 
 function enterApp(){
@@ -131,7 +141,7 @@ async function init(){
   hideCards(); $('#login').style.display='';
 }
 async function showSettings(){
-  hideCards();
+  hideCards(); $('#seterr').textContent='';
   try{
     const s = await api('/api/settings');
     $('#set-sidecar').value = s.sidecar_url||'';
@@ -312,6 +322,23 @@ function renderOptions(id){
       <details open><summary class="hint">raw system-sizes block</summary><pre class="block">${escapeHtml(res.block)}</pre></details>`;
     return;
   }
+  // The sidecar couldn't read the block. Say why in plain words, keep the raw
+  // block visible, and let the user type the kW DC instead of dead-ending.
+  if(res.parse_error){
+    if(!S[id].arrays) S[id].arrays=[{kw:0, tilt:20, azimuth:180}];
+    const rid=(res.parse_error.match(/request_id"\s*:\s*"(\w+)/)||[])[1];
+    body.innerHTML=`
+      <div class="err"><b>Couldn't read this community's system sizes.</b>
+      This lot's system in Creatio has <b>0 panels / 0 kW</b> (not sized yet), so the tool tried to
+      pick a size for plan <b>${escapeHtml(b.plan||'?')}</b> from the Opportunity's system-sizes list, and that list
+      couldn't be read automatically.</div>
+      <div class="hint">Either size the system on the lot in Creatio, then Refresh and reopen this lot,
+      or read the list below and enter the kW DC yourself.${rid?` (Reference for Luis: ${rid})`:''}</div>
+      <details><summary class="hint">raw system-sizes block</summary><pre class="block">${escapeHtml(res.block)}</pre></details>
+      <div id="opts-editor-${id}"></div>`;
+    renderOptionEditor(id);
+    return;
+  }
   const opts=(res.parsed&&res.parsed.options)||[];
   const chips=opts.map((o,i)=>`<span class="opt ${S[id].variant===i?'sel':''}" onclick="pickVariant('${id}',${i})">${o.kw_dc} kW${o.panels?(' / '+o.panels+'p'):''} · ${o.label}</span>`).join('') || '<span class="hint">model found no confident match — read the block below</span>';
   const warns=((res.parsed&&res.parsed.warnings)||[]).map(w=>'<div class="hint">⚠ '+w+'</div>').join('');
@@ -373,9 +400,10 @@ async function runLot(id){
   if(!b.zip){ $('#runstatus-'+id).innerHTML='<span class="err">no zip — cannot run</span>'; return; }
   const invEff = (S[id].mode==='options' && S[id].invEff!=null) ? S[id].invEff : b.inverter_efficiency;
   if(invEff==null || !(invEff>0)){ $('#runstatus-'+id).innerHTML='<span class="err">no inverter efficiency</span>'; return; }
+  const arrays=toArrayInputs(id);
+  if(arrays.some(a=>!(a.system_capacity_kw>0))){ $('#runstatus-'+id).innerHTML='<span class="err">every array needs a size above 0 kW</span>'; return; }
   $('#runstatus-'+id).textContent='running…';
   try{
-    const arrays=toArrayInputs(id);
     const {pv}=await api('/api/run',{zip:b.zip, inv_eff:invEff, arrays});
     S[id].pv=pv; S[id].sentArrays=arrays; $('#runstatus-'+id).textContent='';
     renderResults(id);

@@ -189,6 +189,15 @@ struct OptReq {
     plan_code: String,
 }
 
+/// The sidecar answered but couldn't parse the block (5xx, or a body we can't
+/// read). A rejected key (401/403), an out-of-date client (426) or a network
+/// failure is NOT a parse failure — those surface as-is.
+fn is_parse_failure(e: &anyhow::Error) -> bool {
+    let msg = e.to_string();
+    let parse = "sidecar /run/parse_system_sizes";
+    msg.starts_with(&format!("{parse} 5")) || msg.starts_with(&format!("{parse} returned unexpected JSON"))
+}
+
 async fn options(State(st): State<AppState>, Json(req): Json<OptReq>) -> Api {
     let community_id = req.community_id.ok_or_else(|| anyhow::anyhow!("lot has no linked opportunity"))?;
     let plan_code = req.plan_code.trim().to_string();
@@ -208,8 +217,16 @@ async fn options(State(st): State<AppState>, Json(req): Json<OptReq>) -> Api {
         Some(b) => {
             let sidecar = st.sidecar.lock().await.clone()
                 .ok_or_else(|| anyhow::anyhow!("sidecar not configured — open Settings"))?;
-            let parsed = sidecar.parse_system_sizes(&plan_code, &b).await?;
-            Ok(Json(json!({"ok": true, "block": b, "parsed": parsed})))
+            // A failed parse (e.g. the sidecar 500s on a block it can't read) is not
+            // fatal: hand the UI the raw block + reason so the user can still enter
+            // the kW by hand. Auth/version errors still fail loudly.
+            match sidecar.parse_system_sizes(&plan_code, &b).await {
+                Ok(parsed) => Ok(Json(json!({"ok": true, "block": b, "parsed": parsed}))),
+                Err(e) if is_parse_failure(&e) => Ok(Json(
+                    json!({"ok": true, "block": b, "parsed": null, "parse_error": e.to_string()}),
+                )),
+                Err(e) => Err(e.into()),
+            }
         }
         None => Ok(Json(json!({"ok": true, "block": null, "parsed": null}))),
     }
@@ -333,4 +350,20 @@ async fn pick_folder(Json(req): Json<PickReq>) -> Api {
         "folder": folder.display().to_string(),
         "save_error": save_error,
     })))
+}
+
+#[cfg(test)]
+mod parse_failure_tests {
+    use super::is_parse_failure;
+
+    #[test]
+    fn only_sidecar_parse_errors_are_soft() {
+        let e = |m: &str| anyhow::anyhow!(m.to_string());
+        assert!(is_parse_failure(&e("sidecar /run/parse_system_sizes 500 Internal Server Error: {}")));
+        assert!(is_parse_failure(&e("sidecar /run/parse_system_sizes returned unexpected JSON")));
+        assert!(!is_parse_failure(&e("sidecar /run/parse_system_sizes 401 Unauthorized: {}")));
+        assert!(!is_parse_failure(&e(crate::sidecar::OUT_OF_DATE)));
+        assert!(!is_parse_failure(&e("sidecar /run/parse_system_sizes request failed to send")));
+        assert!(!is_parse_failure(&e("sidecar /run/pvwatts 500 Internal Server Error: {}")));
+    }
 }
