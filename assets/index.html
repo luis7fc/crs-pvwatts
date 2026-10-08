@@ -310,33 +310,35 @@ async function initOptions(id){
 }
 function renderOptions(id){
   const b=S[id].bundle, res=S[id].options, body=$('#body-'+id);
-  if(!res.block){ body.innerHTML='<div class="err">No system-sizes block on the Opportunity — enter manually / check Creatio.</div>'; return; }
-  // No UsrLot_PlanElevation → there is nothing to match the block's per-plan
-  // lines against. Say so plainly instead of firing a parse that can't work.
-  if(res.needs_elevation){
-    body.innerHTML=`
-      <div class="err"><b>No elevation on this lot</b> — can't parse the Opportunity's
-      system sizes by plan. Enter the plan/elevation code on the Creatio lot record
-      (<code>UsrLot_PlanElevation</code>), then Refresh and reopen this lot.</div>
-      <div class="hint">The community's raw block is below for reference — each line is keyed by plan.</div>
-      <details open><summary class="hint">raw system-sizes block</summary><pre class="block">${escapeHtml(res.block)}</pre></details>`;
-    return;
-  }
-  // The sidecar couldn't read the block. Say why in plain words, keep the raw
-  // block visible, and let the user type the kW DC instead of dead-ending.
-  if(res.parse_error){
+  // No size could be picked automatically. Say why in plain words, keep the
+  // raw list visible, and let the user type the kW DC instead of dead-ending.
+  const unsized = b.system ? 'This lot\'s system in Creatio has <b>0 panels / 0 kW</b> (not sized yet)' : 'This lot has no system in Creatio yet';
+  const manual = (why, hint) => {
     if(!S[id].arrays) S[id].arrays=[{kw:0, tilt:20, azimuth:180}];
-    const rid=(res.parse_error.match(/request_id"\s*:\s*"(\w+)/)||[])[1];
-    body.innerHTML=`
-      <div class="err"><b>Couldn't read this community's system sizes.</b>
-      This lot's system in Creatio has <b>0 panels / 0 kW</b> (not sized yet), so the tool tried to
-      pick a size for plan <b>${escapeHtml(b.plan||'?')}</b> from the Opportunity's system-sizes list, and that list
-      couldn't be read automatically.</div>
-      <div class="hint">Either size the system on the lot in Creatio, then Refresh and reopen this lot,
-      or read the list below and enter the kW DC yourself.${rid?` (Reference for Luis: ${rid})`:''}</div>
-      <details><summary class="hint">raw system-sizes block</summary><pre class="block">${escapeHtml(res.block)}</pre></details>
+    body.innerHTML=`<div class="err">${why}</div><div class="hint">${hint}</div>
+      ${res.block?`<details open><summary class="hint">raw system-sizes block</summary><pre class="block">${escapeHtml(res.block)}</pre></details>`:''}
       <div id="opts-editor-${id}"></div>`;
     renderOptionEditor(id);
+  };
+  if(!res.block){
+    manual(`<b>No system sizes for this community.</b> ${unsized}, and the community's Opportunity in Creatio has no system-sizes list.`,
+      'Either size the system on the lot in Creatio, then Refresh and reopen this lot, or enter the kW DC yourself below.');
+    return;
+  }
+  // No UsrLot_PlanElevation → nothing to match the list's per-plan lines against.
+  if(res.needs_elevation){
+    manual(`<b>No plan on this lot yet.</b> ${unsized}, and the lot has no plan/elevation in Creatio,
+      so the tool can't tell which line of the community's size list applies.`,
+      'Either add the plan/elevation to the lot in Creatio, then Refresh and reopen this lot, or find the right size in the list below and enter the kW DC yourself.');
+    return;
+  }
+  // The sidecar couldn't read the list.
+  if(res.parse_error){
+    const rid=(res.parse_error.match(/request_id"\s*:\s*"(\w+)/)||[])[1];
+    manual(`<b>Couldn't read this community's system sizes.</b> ${unsized}, so the tool tried to
+      pick a size for plan <b>${escapeHtml(b.plan||'?')}</b> from the community's size list, and that list
+      couldn't be read automatically.`,
+      `Either size the system on the lot in Creatio, then Refresh and reopen this lot, or find the right size in the list below and enter the kW DC yourself.${rid?` (Reference for Luis: ${rid})`:''}`);
     return;
   }
   const opts=(res.parsed&&res.parsed.options)||[];
@@ -356,6 +358,7 @@ function pickVariant(id,i){
   S[id].arrays=[{kw:o.kw_dc, tilt:20, azimuth:180}];
   renderOptions(id);
 }
+const INVERTER_PICKS=[['Enphase IQ7 / IQ8',97],['Tesla 3.8',97.5],['Powerwall 3 integrated',97.5],['Tesla 7.6',98]];
 function renderOptionEditor(id){
   const box=$('#opts-editor-'+id); if(!box) return;
   const rows=S[id].arrays.map((a,i)=>`
@@ -366,10 +369,16 @@ function renderOptionEditor(id){
       <td>${S[id].arrays.length>1?`<button class="ghost" onclick="delArr('${id}',${i})">✕</button>`:''}</td></tr>`).join('');
   const b=S[id].bundle;
   if(S[id].invEff==null) S[id].invEff = (b.inverter_efficiency!=null) ? b.inverter_efficiency : 96; // 96 = PVWatts default (no inverter on record)
-  const effNote = (b.inverter_efficiency!=null) ? 'from the Creatio inverter' : 'no inverter on record — PVWatts default; edit if known';
+  // No inverter on record: offer the common ones (Creatio Product.SMInverterEfficiency
+  // as of 2026-10-08) instead of a silent 96%. Typing a number still works.
+  const picks = (b.inverter_efficiency!=null) ? '<span class="hint">from the Creatio inverter</span>'
+    : `<select onchange="if(this.value){S['${id}'].invEff=parseFloat(this.value);renderOptionEditor('${id}');}">
+        <option value="">no inverter on record — pick one…</option>
+        ${INVERTER_PICKS.map(([n,e])=>`<option value="${e}" ${S[id].invEff===e?'selected':''}>${n} (${e}%)</option>`).join('')}
+      </select> <span class="hint">or type it; 96 = PVWatts default</span>`;
   box.innerHTML=`
-    <div class="rrow" style="margin:6px 0"><label>Inverter efficiency % <input class="num" type="number" step="0.1" value="${S[id].invEff}" onchange="S['${id}'].invEff=parseFloat(this.value||0)"></label> <span class="hint">${effNote}</span></div>
-    <table class="arr"><thead><tr><th>Array</th><th>kW DC</th><th>Tilt°</th><th>Azimuth°</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="rrow" style="margin:6px 0"><label>Inverter efficiency % <input class="num" type="number" step="0.1" value="${S[id].invEff}" onchange="S['${id}'].invEff=parseFloat(this.value||0)"></label> ${picks}</div>
+    <table class="arr"><thead><tr><th>Array</th><th>kW DC (from the list)</th><th>Tilt°</th><th>Azimuth°</th><th></th></tr></thead><tbody>${rows}</tbody></table>
     <button class="ghost" style="margin-top:6px" onclick="addArr('${id}')">+ add array</button>
     ${runBlock(id)}`;
   restoreResults(id);
