@@ -6,6 +6,7 @@
 //!   pdf.rs      — per-lot audit PDF (NREL results-page clone) -> I: drive
 //!   csv.rs      — per-lot CSV of every value on that PDF, written beside it
 //!   folders.rs  — which EXISTING folder a lot saves to (saved / template / user pick)
+//!   share.rs    — I: drive paths <-> /Volumes/Shares on a Mac
 //!   server.rs   — axum: serves the SPA + JSON API
 //!
 //! Runs on the coworker's PC: starts a localhost server and opens the browser.
@@ -20,6 +21,7 @@ mod csv;
 mod folders;
 mod pdf;
 mod server;
+mod share;
 mod sidecar;
 
 use std::sync::Arc;

@@ -329,14 +329,7 @@ async fn pick_folder(Json(req): Json<PickReq>) -> Api {
         req.bundle.builder.as_deref().unwrap_or("this builder"),
         req.bundle.job_name.as_deref().unwrap_or("this community"),
     );
-    let picked = tokio::task::spawn_blocking(move || {
-        let mut d = rfd::FileDialog::new().set_title(&title);
-        if let Some(s) = start {
-            d = d.set_directory(s);
-        }
-        d.pick_folder()
-    })
-    .await?;
+    let picked = tokio::task::spawn_blocking(move || pick_folder_dialog(&title, start)).await?;
     let Some(folder) = picked else {
         return Ok(Json(json!({"ok": true, "picked": false})));
     };
@@ -350,6 +343,40 @@ async fn pick_folder(Json(req): Json<PickReq>) -> Api {
         "folder": folder.display().to_string(),
         "save_error": save_error,
     })))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pick_folder_dialog(title: &str, start: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    let mut d = rfd::FileDialog::new().set_title(title);
+    if let Some(s) = start {
+        d = d.set_directory(s);
+    }
+    d.pick_folder()
+}
+
+/// rfd can't open a dialog off the main thread on macOS (it panics), and the
+/// main thread here is the tokio runtime, so ask Finder through osascript.
+/// Cancel exits non-zero -> None.
+#[cfg(target_os = "macos")]
+fn pick_folder_dialog(title: &str, start: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    const SCRIPT: &str = r#"on run argv
+    set p to item 1 of argv
+    if (count of argv) > 1 then
+        return POSIX path of (choose folder with prompt p default location (POSIX file (item 2 of argv)))
+    end if
+    return POSIX path of (choose folder with prompt p)
+end run"#;
+    let mut cmd = std::process::Command::new("osascript");
+    cmd.arg("-e").arg(SCRIPT).arg(title);
+    if let Some(s) = start {
+        cmd.arg(s);
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().trim_end_matches('/').to_string();
+    (!path.is_empty()).then(|| std::path::PathBuf::from(path))
 }
 
 #[cfg(test)]

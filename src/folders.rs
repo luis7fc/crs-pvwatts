@@ -173,7 +173,7 @@ fn read_mapping(path: &Path) -> HashMap<String, PathBuf> {
     for line in text.trim_start_matches('\u{feff}').lines().skip(1) {
         let f = split_line(line);
         if f.len() >= 4 && !f[0].trim().is_empty() && !f[3].trim().is_empty() {
-            m.insert(f[0].trim().to_lowercase(), PathBuf::from(f[3].trim()));
+            m.insert(f[0].trim().to_lowercase(), crate::share::to_local(f[3].trim()));
         }
     }
     m
@@ -201,7 +201,7 @@ pub fn save_mapping(ledger: &Path, b: &LotBundle, folder: &Path) -> Result<()> {
         key,
         b.builder.clone().unwrap_or_default(),
         b.job_name.clone().unwrap_or_default(),
-        folder.display().to_string(),
+        crate::share::to_shared(folder),
         who,
         chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
     ];

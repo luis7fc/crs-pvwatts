@@ -137,8 +137,8 @@ fn wrap(s: &str, size: f32, face: Face, max_w: f32) -> Vec<String> {
 
 pub fn output_root() -> PathBuf {
     std::env::var("PVWATTS_OUTPUT_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_ROOT))
+        .map(|s| crate::share::to_local(&s))
+        .unwrap_or_else(|_| crate::share::to_local(DEFAULT_ROOT))
 }
 
 /// Strip characters illegal in Windows path components.

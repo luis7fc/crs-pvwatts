@@ -313,8 +313,8 @@ pub fn ledger_dir() -> PathBuf {
     std::env::var("PVWATTS_LEDGER_DIR")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_LEDGER_DIR))
+        .map(|s| crate::share::to_local(&s))
+        .unwrap_or_else(|| crate::share::to_local(DEFAULT_LEDGER_DIR))
 }
 
 /// `<lot code>-<job name>` — the part of the key that identifies the lot.
