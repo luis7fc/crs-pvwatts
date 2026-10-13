@@ -4,35 +4,29 @@
 //! old create-on-demand template littered Production with near-duplicate trees.
 //!
 //! Community folder, first hit wins:
-//!   1. the saved mapping for this community (Opportunity GUID), if that folder
-//!      still exists — `community_folders.csv` beside the central ledger, shared
-//!      by every PC so one person's pick serves the whole team;
-//!   2. the template `{root}\{builder}\{job_name}`, if it exists;
-//!   3. nothing -> the UI asks the user to pick a folder (native dialog), and the
-//!      pick is saved as that community's mapping.
+//!   1. a saved mapping for this community (Opportunity GUID), if that folder
+//!      still exists — `community_folders.csv` beside the central ledger, written
+//!      by earlier versions and now only read (a row naming a lot folder or
+//!      `Consultations` is walked up to the community);
+//!   2. the template `{root}\{builder}\{job_name}`, if it exists.
 //!
 //! Inside the community folder: descend into `Consultations` when it exists,
-//! then into a lot folder whose name carries this lot's street address when
-//! exactly one does ("Lot 1 - 4524 Field View Drive"). Otherwise the files go in
-//! the deepest of those that exists. Nothing is ever created.
+//! then into the one lot folder whose name carries this lot's street address
+//! ("Lot 1 - 4524 Field View Drive") or its lot number ("Lot 75").
+//!
+//! No community or no single lot folder -> the UI asks the user for THIS lot's
+//! folder (native dialog). That pick is used for this record only and never
+//! saved, so one lot's folder can't become another lot's default. Nothing is
+//! ever created.
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
-use anyhow::{Context, Result};
 
 use crate::creatio::LotBundle;
 use crate::pdf::safe;
 
 const MAP_FILE: &str = "community_folders.csv";
-const MAP_HEADER: &str = "community_key,builder,job_name,folder,set_by,set_at\r\n";
-
-/// Picks made this session. Covers a share hiccup on the mapping file so the
-/// user isn't asked twice for the same community in one sitting.
-static SESSION: Mutex<Option<HashMap<String, PathBuf>>> = Mutex::new(None);
 
 /// Opportunity GUID; builder|job when a lot has no linked opportunity.
 pub fn community_key(b: &LotBundle) -> String {
@@ -62,15 +56,11 @@ impl Source {
     }
 }
 
-/// The community folder for this lot, or None when the user has to choose.
+/// The community folder for this lot, or None when it can't be found.
 pub fn community_folder(root: &Path, ledger: &Path, b: &LotBundle) -> Option<(PathBuf, Source)> {
     let key = community_key(b);
-    if let Some(p) = SESSION.lock().ok().and_then(|g| g.as_ref()?.get(&key).cloned()) {
-        if p.is_dir() {
-            return Some((p, Source::Saved));
-        }
-    }
-    if let Some(p) = read_mapping(&ledger.join(MAP_FILE)).remove(&key) {
+    // community_of: older versions saved whatever was picked, often a lot folder.
+    if let Some(p) = read_mapping(&ledger.join(MAP_FILE)).remove(&key).map(|p| community_of(&p)) {
         if p.is_dir() {
             return Some((p, Source::Saved));
         }
@@ -91,18 +81,42 @@ pub fn picker_start(root: &Path, b: &LotBundle) -> Option<PathBuf> {
     builder.filter(|p| p.is_dir()).or_else(|| root.is_dir().then(|| root.to_path_buf()))
 }
 
-/// Final save folder under an existing community folder. Only descends into
-/// folders that exist.
-pub fn lot_dir(community: &Path, b: &LotBundle) -> PathBuf {
-    let mut dir = community.to_path_buf();
-    let consult = dir.join("Consultations");
-    if consult.is_dir() {
-        dir = consult;
+/// `Consultations` under the community when it exists, else the community.
+/// Where lot folders live, and where the lot picker opens.
+pub fn lots_parent(community: &Path) -> PathBuf {
+    let consult = community.join("Consultations");
+    if consult.is_dir() { consult } else { community.to_path_buf() }
+}
+
+/// This lot's own folder under an existing community folder, or None when no
+/// single folder matches (the UI then asks, for this record only).
+pub fn lot_dir(community: &Path, b: &LotBundle) -> Option<PathBuf> {
+    matching_lot_folder(&lots_parent(community), b)
+}
+
+/// "Lot 75", "lot 75 - 1495 Woodhill Lane" -> "75". None when the name doesn't
+/// start with "Lot <something>".
+fn lot_number_of(folder_name: &str) -> Option<String> {
+    let s = folder_name.trim();
+    let rest = s.get(..3).filter(|p| p.eq_ignore_ascii_case("lot")).map(|_| &s[3..])?;
+    let n: String = rest.trim_start().chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    // "Lot75" counts; "Lots", "Lotus" don't.
+    let sep = rest.starts_with(|c: char| !c.is_ascii_alphabetic());
+    (!n.is_empty() && sep).then(|| n.to_lowercase())
+}
+
+/// Walk a saved folder up to its community: drop a lot folder, then a
+/// `Consultations` folder. Anything else is already a community folder.
+fn community_of(folder: &Path) -> PathBuf {
+    let mut p = folder.to_path_buf();
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if lot_number_of(&name(&p)).is_some() {
+        if let Some(up) = p.parent() { p = up.to_path_buf(); }
     }
-    if let Some(sub) = b.lot_addr.as_deref().and_then(|a| matching_lot_folder(&dir, a)) {
-        dir = sub;
+    if name(&p).trim().eq_ignore_ascii_case("consultations") {
+        if let Some(up) = p.parent() { p = up.to_path_buf(); }
     }
-    dir
+    p
 }
 
 fn norm(s: &str) -> String {
@@ -121,19 +135,22 @@ fn street(lot_addr: &str) -> String {
     }
 }
 
-/// The one subfolder whose name ends with this lot's street address. Two or
-/// more matches is ambiguous — stay put rather than guess.
-fn matching_lot_folder(dir: &Path, lot_addr: &str) -> Option<PathBuf> {
-    let want = norm(&street(lot_addr));
-    if want.len() < 6 {
-        return None; // too short to be an address; would match noise
-    }
-    let full = norm(lot_addr);
+/// The one subfolder whose name ends with this lot's street address or is
+/// "Lot <this lot's number>". Two or more matches is ambiguous — ask rather
+/// than guess.
+fn matching_lot_folder(dir: &Path, b: &LotBundle) -> Option<PathBuf> {
+    // Address too short to be an address would match noise — skip that test.
+    let addr = b.lot_addr.as_deref()
+        .map(|a| (norm(a), norm(&street(a))))
+        .filter(|(_, want)| want.len() >= 6);
+    let lot = b.lot.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
     let mut hits = fs::read_dir(dir).ok()?.flatten()
         .filter(|e| e.path().is_dir())
         .filter(|e| {
-            let n = norm(&e.file_name().to_string_lossy());
-            n == full || n.ends_with(&want)
+            let raw = e.file_name().to_string_lossy().into_owned();
+            let n = norm(&raw);
+            addr.as_ref().is_some_and(|(full, want)| n == *full || n.ends_with(want.as_str()))
+                || (lot.is_some() && lot_number_of(&raw) == lot)
         })
         .map(|e| e.path());
     let first = hits.next()?;
@@ -158,15 +175,7 @@ fn split_line(line: &str) -> Vec<String> {
     out
 }
 
-fn esc(s: &str) -> String {
-    if s.contains(',') || s.contains('"') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
-}
-
-/// key -> folder; later rows win, so re-picking a community just appends.
+/// key -> folder; later rows win.
 fn read_mapping(path: &Path) -> HashMap<String, PathBuf> {
     let mut m = HashMap::new();
     let Ok(text) = fs::read_to_string(path) else { return m };
@@ -179,40 +188,11 @@ fn read_mapping(path: &Path) -> HashMap<String, PathBuf> {
     m
 }
 
-/// Remember `folder` for this lot's community: this session always, the shared
-/// mapping file best-effort (the returned error is for the UI to show).
-pub fn save_mapping(ledger: &Path, b: &LotBundle, folder: &Path) -> Result<()> {
-    let key = community_key(b);
-    if let Ok(mut g) = SESSION.lock() {
-        g.get_or_insert_with(HashMap::new).insert(key.clone(), folder.to_path_buf());
-    }
-    if !ledger.is_dir() {
-        anyhow::bail!("shared folder list unavailable: {}", ledger.display());
-    }
-    let path = ledger.join(MAP_FILE);
-    let new = !path.exists();
-    let mut f = fs::OpenOptions::new().create(true).append(true).open(&path)
-        .with_context(|| format!("could not write {}", path.display()))?;
-    if new {
-        f.write_all(MAP_HEADER.as_bytes())?;
-    }
-    let who = std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default();
-    let row = [
-        key,
-        b.builder.clone().unwrap_or_default(),
-        b.job_name.clone().unwrap_or_default(),
-        crate::share::to_shared(folder),
-        who,
-        chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
-    ];
-    let line = row.iter().map(|s| esc(s)).collect::<Vec<_>>().join(",") + "\r\n";
-    f.write_all(line.as_bytes())?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MAP_HEADER: &str = "community_key,builder,job_name,folder,set_by,set_at\r\n";
 
     // Each test uses its own community id: the session cache is process-wide.
     fn bundle(dir_builder: &str, job: &str, addr: &str) -> LotBundle {
@@ -255,21 +235,77 @@ mod tests {
         let b = bundle("KB Home", "Esquire", "1 - 4524 Field View Drive");
         let (c, src) = community_folder(&root, &ledger, &b).unwrap();
         assert_eq!(src, Source::Template);
-        assert_eq!(lot_dir(&c, &b), lot);
-        // No lot folder -> Consultations itself.
-        let b2 = bundle("KB Home", "Esquire", "Lot 9 - 99 Other Way");
-        assert_eq!(lot_dir(&c, &b2), lot.parent().unwrap());
+        assert_eq!(lot_dir(&c, &b), Some(lot.clone()));
+        // No lot folder -> ask (None); the picker opens in Consultations.
+        let mut b2 = bundle("KB Home", "Esquire", "Lot 9 - 99 Other Way");
+        b2.lot = Some("9".into());
+        assert_eq!(lot_dir(&c, &b2), None);
+        assert_eq!(lots_parent(&c), lot.parent().unwrap());
     }
 
     #[test]
-    fn saved_mapping_wins_and_survives_reload() {
+    fn lot_folder_by_number_only() {
+        let root = tmp("root_num");
+        let consult = root.join("Wilson Homes").join("Elev8ions 6205").join("Consultations");
+        for n in ["Lot 7", "Lot 75", "Lot 79", "Lots archive"] {
+            fs::create_dir_all(consult.join(n)).unwrap();
+        }
+        let community = consult.parent().unwrap();
+        let mut b = bundle("Wilson Homes", "Elev8ions at Tract 6205", "79 - 1495 Woodhill Lane");
+        b.lot = Some("79".into());
+        assert_eq!(lot_dir(community, &b), Some(consult.join("Lot 79")));
+        b.lot = Some("7".into()); // must not take "Lot 75"/"Lot 79"
+        b.lot_addr = Some("7 - 1 Nowhere Road".into());
+        assert_eq!(lot_dir(community, &b), Some(consult.join("Lot 7")));
+        b.lot = Some("80".into());
+        b.lot_addr = Some("80 - 1501 Woodhill Lane".into());
+        assert_eq!(lot_dir(community, &b), None);
+    }
+
+    #[test]
+    fn lot_number_parsing() {
+        assert_eq!(lot_number_of("Lot 75").as_deref(), Some("75"));
+        assert_eq!(lot_number_of("lot 75 - 1495 Woodhill Lane").as_deref(), Some("75"));
+        assert_eq!(lot_number_of("Lot75").as_deref(), Some("75"));
+        assert_eq!(lot_number_of("Lots archive"), None);
+        assert_eq!(lot_number_of("Lotus Court"), None);
+        assert_eq!(lot_number_of("Consultations"), None);
+    }
+
+    #[test]
+    fn lot_folder_pick_never_becomes_community_default() {
+        let root = tmp("root_walk");
+        let ledger = tmp("ledger_walk");
+        let community = root.join("Wilson Homes").join("Elev8ions 6205");
+        let lot75 = community.join("Consultations").join("Lot 75");
+        fs::create_dir_all(&lot75).unwrap();
+        assert_eq!(community_of(&lot75), community);
+        assert_eq!(community_of(&community.join("Consultations")), community);
+        assert_eq!(community_of(&community), community);
+        // An old row that saved the lot folder resolves to the community.
+        let b = bundle("Wilson Homes", "Elev8ions walk", "79 - 1495 Woodhill Lane");
+        fs::write(
+            ledger.join(MAP_FILE),
+            format!("{MAP_HEADER}{},Wilson Homes,Elev8ions walk,{},x,2026-10-13 08:00\r\n",
+                community_key(&b), lot75.display()),
+        ).unwrap();
+        let (c, src) = community_folder(&root, &ledger, &b).unwrap();
+        assert_eq!((c, src), (community, Source::Saved));
+    }
+
+    #[test]
+    fn saved_mapping_wins() {
         let root = tmp("root_map");
         let ledger = tmp("ledger_map");
         let picked = root.join("KB Home").join("Cambridge at Placer One (aka Cambridge, The Ranch)");
         fs::create_dir_all(&picked).unwrap();
         let b = bundle("KB Home", "Cambridge at Placer One", "Lot 3 - 12 Elm Ct");
-        save_mapping(&ledger, &b, &picked).unwrap();
-        // Read straight from the file (the comma in the name exercises quoting).
+        // A row as older versions wrote it (the comma in the name exercises quoting).
+        fs::write(
+            ledger.join(MAP_FILE),
+            format!("{MAP_HEADER}{},KB Home,Cambridge at Placer One,\"{}\",x,2026-09-30 10:00\r\n",
+                community_key(&b), picked.display()),
+        ).unwrap();
         let m = read_mapping(&ledger.join(MAP_FILE));
         assert_eq!(m.get(&community_key(&b)), Some(&picked));
         let (c, src) = community_folder(&root, &ledger, &b).unwrap();

@@ -101,6 +101,7 @@
       <button class="ghost" id="sortdir" onclick="toggleSortDir()" title="Ascending / descending">↑ Asc</button>
       <button class="ghost" onclick="clearSearch()">Clear</button>
     </div>
+    <div id="filtersrc"></div>
     <div id="lots"></div>
   </main>
 </div>
@@ -177,12 +178,19 @@ async function refresh(){
   $('#lots').innerHTML='<div class="hint">Loading full pending pool… (a few seconds)</div>';
   try{
     const all = $('#alllots').checked;
-    const {lots} = await api('/api/pool' + (all ? '?all=true' : ''));
+    const {lots, filters} = await api('/api/pool' + (all ? '?all=true' : ''));
     POOL = lots;
+    showFilterSource(filters);
     applyFilter();
     if(!all && !POOL.length)
       $('#lots').innerHTML='<div class="hint">No lots waiting in communities where you are the Buyer Consultant. Tick <b>All lots</b> to see every lot awaiting consultation.</div>';
   }catch(e){ $('#lots').innerHTML='<div class="err">'+e.message+'</div>'; }
+}
+// Which filter file the list used, plus any mistakes in it (pvwatts_filters.txt).
+function showFilterSource(f){
+  if(!f){ $('#filtersrc').innerHTML=''; return; }
+  const warn=(f.warnings||[]).map(w=>`<div class="err">Filter file: ${escapeHtml(w)}</div>`).join('');
+  $('#filtersrc').innerHTML=`<div class="hint" style="overflow-wrap:anywhere">Lot list filters: ${escapeHtml(f.source)}</div>${warn}`;
 }
 let SORT_DESC=false;
 // Job/lot numbers are strings but read as numbers ("9" before "10"), and plan
@@ -440,35 +448,32 @@ async function commit(id){
   if(cand && !confirm(`Write ${pv.lot_total_kwh.toLocaleString()} kWh/yr + ${Math.round(pv.lot_total_kwh/12).toLocaleString()} kWh/mo to Creatio for lot ${b.lot}?\nThis updates the live record and removes the lot from the pool.`)) return;
   $('#commit-'+id).textContent='saving…';
   try{
-    const body={bundle:b, arrays:S[id].sentArrays, pv, is_candidate:cand, variant_label:variant};
+    // S[id].lotFolder: this record's own pick, if one was needed — never shared.
+    const body={bundle:b, arrays:S[id].sentArrays, pv, is_candidate:cand, variant_label:variant, lot_folder:S[id].lotFolder||null};
     let res=await api('/api/commit',body);
-    if(res.needs_folder){
-      // No known folder for this community — nothing was saved or written yet.
-      const pick=await pickFolder(id,`No folder found for ${escapeHtml(b.builder||'?')} / ${escapeHtml(b.job_name||'?')}.`);
+    if(res.needs_lot_folder){
+      // No folder found for this lot — nothing was saved or written yet.
+      const pick=await pickLotFolder(id,`No folder found for lot ${escapeHtml(b.lot_addr||b.lot||'?')} (${escapeHtml(b.job_name||'?')}).`);
       if(!pick) return;
+      body.lot_folder=pick;
       $('#commit-'+id).textContent='saving…';
       res=await api('/api/commit',body);
-      if(res.needs_folder) throw new Error('the chosen folder is no longer reachable — try again');
+      if(res.needs_lot_folder) throw new Error('the chosen folder is no longer reachable — try again');
     }
-    $('#commit-'+id).innerHTML = `<span class="tag good">PDF saved</span> ${res.wrote_creatio?`<span class="tag good">Creatio updated (${res.rows} row)</span>`:'<span class="tag">audit only</span>'}<div class="path">${res.pdf_path}</div><div class="path">${res.csv_path||''}</div>${res.ledger_path?`<div class="path">${res.ledger_path}</div>`:`<div class="err">Ledger not written (${res.ledger_error||'unknown'}) — lot files are saved; tell Luis the key ${res.submission_key}</div>`}<div class="hint">Community folder (${res.folder_source}): ${escapeHtml(res.folder)} · <a href="#" onclick="changeFolder('${id}');return false">change for next time</a></div>`;
+    const lotPicked = res.lot_source==='picked for this lot';
+    $('#commit-'+id).innerHTML = `<span class="tag good">PDF saved</span> ${res.wrote_creatio?`<span class="tag good">Creatio updated (${res.rows} row)</span>`:'<span class="tag">audit only</span>'}<div class="path">${res.pdf_path}</div><div class="path">${res.csv_path||''}</div>${res.ledger_path?`<div class="path">${res.ledger_path}</div>`:`<div class="err">Ledger not written (${res.ledger_error||'unknown'}) — lot files are saved; tell Luis the key ${res.submission_key}</div>`}${lotPicked?`<div class="hint">Folder picked for this lot only — not remembered for other lots.</div>`:''}`;
   }catch(e){ $('#commit-'+id).innerHTML='<span class="err">'+e.message+'</span>'; }
 }
 
 // Opens the Windows "choose folder" dialog (it may appear behind this window —
-// check the taskbar). The pick is remembered for the community, for everyone.
-async function pickFolder(id,why){
-  $('#commit-'+id).innerHTML=`<span class="hint">${why} Choose where to save in the folder window that just opened (check the taskbar if you don't see it).</span>`;
+// check the taskbar). This record's folder only: kept on this lot's card (S[id])
+// for re-saves, never sent with another lot and never anyone's default.
+async function pickLotFolder(id,why){
+  $('#commit-'+id).innerHTML=`<span class="hint">${why} Choose this lot's folder in the folder window that just opened (check the taskbar if you don't see it). Used for this lot only.</span>`;
   const r=await api('/api/pick_folder',{bundle:S[id].bundle});
   if(!r.picked){ $('#commit-'+id).innerHTML='<span class="err">No folder chosen — nothing was saved and Creatio was not updated.</span>'; return null; }
-  if(r.save_error) console.warn('folder remembered for this session only:', r.save_error);
+  S[id].lotFolder=r.folder;
   return r.folder;
-}
-
-async function changeFolder(id){
-  try{
-    const f=await pickFolder(id,'Changing the saved folder for this community.');
-    if(f) $('#commit-'+id).innerHTML=`<span class="tag good">Folder saved</span> <div class="path">${escapeHtml(f)}</div><div class="hint">Used from the next save on; files already saved were not moved.</div>`;
-  }catch(e){ $('#commit-'+id).innerHTML='<span class="err">'+e.message+'</span>'; }
 }
 
 function escapeHtml(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}

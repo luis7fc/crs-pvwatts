@@ -172,8 +172,10 @@ struct PoolReq {
 async fn pool(State(st): State<AppState>, Query(req): Query<PoolReq>) -> Api {
     let guard = st.session.lock().await;
     let sess = guard.as_ref().ok_or_else(|| anyhow::anyhow!("not logged in"))?;
-    let lots = sess.fetch_pool(req.all).await?;
-    Ok(Json(json!({"ok": true, "lots": lots})))
+    // Re-read every load, so a filter-file edit applies on the next Refresh.
+    let f = crate::filters::load();
+    let lots = sess.fetch_pool(req.all, &f.filters).await?;
+    Ok(Json(json!({"ok": true, "lots": lots, "filters": f})))
 }
 
 async fn bundle(State(st): State<AppState>, Json(lot): Json<creatio::PoolLot>) -> Api {
@@ -253,6 +255,9 @@ struct CommitReq {
     pv: sidecar::PvResult,
     is_candidate: bool,
     variant_label: Option<String>,
+    /// This record's folder, picked by the user when no lot folder matched.
+    /// Used for this save only — never remembered.
+    lot_folder: Option<String>,
 }
 
 async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
@@ -260,15 +265,21 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
     // found must not be written back and then left without its documents.
     let root = pdf::output_root();
     let ledger = crate::csv::ledger_dir();
-    let Some((community, source)) = folders::community_folder(&root, &ledger, &req.bundle) else {
-        return Ok(Json(json!({
-            "ok": true,
-            "needs_folder": true,
-            "builder": req.bundle.builder,
-            "job_name": req.bundle.job_name,
-        })));
+    let community = folders::community_folder(&root, &ledger, &req.bundle);
+    let picked = req.lot_folder.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from).filter(|p| p.is_dir());
+    let (dir, lot_source) = match picked {
+        Some(p) => (p, "picked for this lot"),
+        None => match community.as_ref().and_then(|(c, _)| folders::lot_dir(c, &req.bundle)) {
+            Some(p) => (p, "lot folder"),
+            // No community or no single lot folder: ask for this record's folder.
+            // Nothing saved or written yet.
+            None => return Ok(Json(json!({
+                "ok": true,
+                "needs_lot_folder": true,
+            }))),
+        },
     };
-    let dir = folders::lot_dir(&community, &req.bundle);
 
     // Creatio FIRST, documents second. Both artifacts state whether the writeback
     // happened, so writing them first can leave a PDF on the I: drive claiming an
@@ -303,8 +314,10 @@ async fn commit(State(st): State<AppState>, Json(req): Json<CommitReq>) -> Api {
         "ok": true,
         "pdf_path": path.display().to_string(),
         "csv_path": csv_path.display().to_string(),
-        "folder": community.display().to_string(),
-        "folder_source": source.as_str(),
+        "folder": community.as_ref().map(|(c, _)| c.display().to_string()),
+        "folder_source": community.as_ref().map(|(_, s)| s.as_str()),
+        "lot_dir": dir.display().to_string(),
+        "lot_source": lot_source,
         "ledger_path": ledger_path,
         "ledger_error": ledger_error,
         "submission_key": sub.key,
@@ -319,30 +332,25 @@ struct PickReq {
     bundle: creatio::LotBundle,
 }
 
-/// Open the native folder dialog on this PC (the server IS the user's PC) and
-/// remember the pick for the lot's community. Cancel -> `picked: false`.
+/// Open the native folder dialog on this PC (the server IS the user's PC) for
+/// THIS lot's folder. Not remembered — the UI sends it back with this record's
+/// commit only. Opens in the community's lot folders when the community is
+/// known. Cancel -> `picked: false`.
 async fn pick_folder(Json(req): Json<PickReq>) -> Api {
     let root = pdf::output_root();
-    let start = folders::picker_start(&root, &req.bundle);
+    let start = folders::community_folder(&root, &crate::csv::ledger_dir(), &req.bundle)
+        .map(|(c, _)| folders::lots_parent(&c))
+        .or_else(|| folders::picker_start(&root, &req.bundle));
     let title = format!(
-        "Where do PV Watts files go for {} - {}?",
-        req.bundle.builder.as_deref().unwrap_or("this builder"),
-        req.bundle.job_name.as_deref().unwrap_or("this community"),
+        "Which folder is Lot {} ({})? This lot only",
+        req.bundle.lot_addr.as_deref().or(req.bundle.lot.as_deref()).unwrap_or("?"),
+        req.bundle.job_name.as_deref().unwrap_or("?"),
     );
     let picked = tokio::task::spawn_blocking(move || pick_folder_dialog(&title, start)).await?;
-    let Some(folder) = picked else {
-        return Ok(Json(json!({"ok": true, "picked": false})));
-    };
-    // Kept for this session regardless; the shared list is best-effort.
-    let save_error = folders::save_mapping(&crate::csv::ledger_dir(), &req.bundle, &folder)
-        .err()
-        .map(|e| format!("{e:#}"));
-    Ok(Json(json!({
-        "ok": true,
-        "picked": true,
-        "folder": folder.display().to_string(),
-        "save_error": save_error,
-    })))
+    Ok(Json(match picked {
+        Some(f) => json!({"ok": true, "picked": true, "folder": f.display().to_string()}),
+        None => json!({"ok": true, "picked": false}),
+    }))
 }
 
 #[cfg(not(target_os = "macos"))]

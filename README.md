@@ -78,6 +78,12 @@ After that the user just double-clicks the exe → it auto-logs in → pending p
    Consultant is the logged-in user (the full set, paged from Creatio — ~10s load).
    Tick **All lots** (next to Refresh) to drop the Buyer Consultant rule and see
    every awaiting lot — for managers and cover. Off by default on every launch.
+   The channel list, the three field rules and any hidden communities / builders /
+   job numbers come from `pvwatts_filters.txt` on the I: drive
+   (`I:\Solar\Field Ops\Field Operations Admin Processes\API_TOOLS\pvwatts\`;
+   starting copy in this repo). It is re-read on every Refresh, so edits need no new
+   version. A missing file means the defaults above. Override the path with
+   `PVWATTS_FILTERS_FILE`.
 2. **Search** box filters the pool by job # / lot # / community (partial).
 3. Pick a lot →
    - **Normal:** committed system → split its panels into arrays (tilt/azimuth).
@@ -148,6 +154,8 @@ src/
   calc.rs      wattage-from-model parser + kW math (tested)
   pdf.rs       per-lot audit PDF (NREL results-page clone) → I: drive
   csv.rs       per-lot CSV of every value on that PDF, written beside it
+  filters.rs   pool filters from pvwatts_filters.txt (I: drive), defaults built in
+  folders.rs   which existing folder a lot saves to; per-lot pick when none matches
   config.rs    pvwatts.env read/write (remember creds, settings)
 assets/index.html   single-page UI (login, settings, pool, search, run, commit)
 ```

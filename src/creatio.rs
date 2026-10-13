@@ -18,12 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::calc;
+use crate::filters::PoolFilters;
 
 const DATA_SERVICE: &str = "/0/DataService/json/SyncReply/SelectQuery";
 const UPDATE_SERVICE: &str = "/0/DataService/json/SyncReply/UpdateQuery";
 const USER_INFO_SERVICE: &str = "/0/ServiceModel/UserInfoService.svc/GetCurrentUserInfo";
-/// Lot channels (UsrChannel display values) that belong in the pool.
-const POOL_CHANNELS: &[&str] = &["Integrated", "Cash Only"];
 /// OData page size for the Buyer Consultant community list.
 const ODATA_PAGE: usize = 1000;
 const DVT_INTEGER: i64 = 4; // CrsEstAnnualKwhProductionLot writeback
@@ -286,30 +285,39 @@ impl Session {
     /// The selectable lot pool. `all_lots` = false (default): only lots whose
     /// community has the logged-in user as Buyer Consultant. `all_lots` = true:
     /// every awaiting lot — the "All lots" switch, for managers and cover.
-    pub async fn fetch_pool(&self, all_lots: bool) -> Result<Vec<PoolLot>> {
+    pub async fn fetch_pool(&self, all_lots: bool, filters: &PoolFilters) -> Result<Vec<PoolLot>> {
         if all_lots {
-            return self.fetch_pool_in(None).await;
+            return self.fetch_pool_in(None, filters).await;
         }
         // "Community.Buyer Consultant = Current contact"
         let contact_id = self.current_contact_id().await?;
         let my_communities = self.buyer_consultant_communities(&contact_id).await?;
-        self.fetch_pool_in(Some(&my_communities)).await
+        self.fetch_pool_in(Some(&my_communities), filters).await
     }
 
     /// Fetch the FULL selectable lot pool by paging through all lot records.
-    /// Predicate: UsrChannel in POOL_CHANNELS AND UsrBuyerInfoReceived set AND
-    /// SMConsultationComplete blank AND CrsEstAnnualKwhProductionLot blank/0 AND
-    /// (when `communities` is given) the lot's community is in that set.
+    /// Predicate (each part from the filter file, see filters.rs): UsrChannel in
+    /// `channels` AND UsrBuyerInfoReceived set AND SMConsultationComplete blank AND
+    /// CrsEstAnnualKwhProductionLot blank/0 AND not in an exclude list AND (when
+    /// `communities` is given) the lot's community is in that set.
     ///
     /// Filtered CLIENT-SIDE (the DataService server-side null/lookup filters 500
     /// or silently no-op — vault-confirmed). DataService caps rowCount, so we page
     /// with rowsOffset ordered by Id. ~100k lots -> ~12s, ~281 pending.
-    async fn fetch_pool_in(&self, communities: Option<&HashSet<String>>) -> Result<Vec<PoolLot>> {
-        const COLS: &[&str] = &[
+    async fn fetch_pool_in(&self, communities: Option<&HashSet<String>>, filters: &PoolFilters) -> Result<Vec<PoolLot>> {
+        const BASE_COLS: &[&str] = &[
             "Id", "UsrJobNumber", "UsrName", "UsrLotNumberPlusAddress", "UsrZipCode",
             "UsrLot_PlanElevation", "UsrLot_Community", "UsrChannel",
             "UsrBuyerInfoReceived", "SMConsultationComplete", "CrsEstAnnualKwhProductionLot",
         ];
+        // Builder = the community Opportunity's Account. Only read when the filter
+        // file hides builders, so the default query is unchanged.
+        const BUILDER: &str = "UsrLot_Community.Account";
+        let mut cols = BASE_COLS.to_vec();
+        if !filters.exclude_builders.is_empty() {
+            cols.push(BUILDER);
+        }
+        let cols = cols.as_slice();
         const CHUNK: i64 = 5000;
         const BATCH: usize = 6; // pages fetched concurrently per round
 
@@ -318,7 +326,7 @@ impl Session {
         loop {
             // Fire BATCH page requests at once (each page is independent — offset +
             // Id order — so concurrency is safe on the one shared session).
-            let futs = (0..BATCH).map(|i| self.select(pool_page_payload(COLS, CHUNK, base + (i as i64) * CHUNK)));
+            let futs = (0..BATCH).map(|i| self.select(pool_page_payload(cols, CHUNK, base + (i as i64) * CHUNK)));
             let results = futures::future::join_all(futs).await;
 
             let mut done = false;
@@ -329,16 +337,21 @@ impl Session {
                     done = true; // this page is the last
                 }
                 for r in rows {
-                    let channel_ok = disp(field(r, "UsrChannel"))
-                        .is_some_and(|c| POOL_CHANNELS.contains(&c.as_str()));
+                    let channel_ok = filters.channel_ok(disp(field(r, "UsrChannel")).as_deref());
                     let mine = communities.is_none_or(|set| {
                         guid(field(r, "UsrLot_Community")).is_some_and(|g| set.contains(&g.to_lowercase()))
                     });
+                    let excluded = filters.excluded(
+                        disp(field(r, "UsrLot_Community")).as_deref(),
+                        disp(field(r, &BUILDER.replace('.', "_"))).as_deref(),
+                        disp(field(r, "UsrJobNumber")).as_deref(),
+                    );
                     if channel_ok
                         && mine
-                        && !blank(field(r, "UsrBuyerInfoReceived"))
-                        && blank(field(r, "SMConsultationComplete"))
-                        && blank(field(r, "CrsEstAnnualKwhProductionLot"))
+                        && !excluded
+                        && (!filters.require_buyer_info_received || !blank(field(r, "UsrBuyerInfoReceived")))
+                        && (!filters.require_consultation_not_complete || blank(field(r, "SMConsultationComplete")))
+                        && (!filters.require_no_kwh_yet || blank(field(r, "CrsEstAnnualKwhProductionLot")))
                     {
                         pool.push(PoolLot {
                             lot_id: disp(field(r, "Id")).unwrap_or_default(),
@@ -564,7 +577,9 @@ fn pool_page_payload(cols: &[&str], row_count: i64, offset: i64) -> Value {
             expr["orderDirection"] = json!(1); // ascending — consistent page order
             expr["orderPosition"] = json!(0);
         }
-        items.insert((*c).to_string(), expr);
+        // A joined path ("UsrLot_Community.Account") comes back under its item
+        // key, so give it a plain one: dots -> underscores.
+        items.insert(c.replace('.', "_"), expr);
     }
     json!({
         "rootSchemaName": "UsrLotRecords",
@@ -733,7 +748,7 @@ mod read_tests {
                 bail!("no contact named {name:?}");
             }
             // Duplicate names exist — report every match, never pick one silently.
-            let all = sess.fetch_pool_in(None).await?;
+            let all = sess.fetch_pool_in(None, &PoolFilters::default()).await?;
             println!("all lots: {}", all.len());
             for id in &ids {
                 let login = sess
@@ -748,7 +763,7 @@ mod read_tests {
                     .await?;
                 let has_login = login["value"].as_array().is_some_and(|v| !v.is_empty());
                 let communities = sess.buyer_consultant_communities(id).await?;
-                let mine = sess.fetch_pool_in(Some(&communities)).await?; // the real filter path
+                let mine = sess.fetch_pool_in(Some(&communities), &PoolFilters::default()).await?; // the real filter path
                 println!(
                     "\ncontact ...{}: Creatio login: {has_login}, Buyer Consultant on {} communities, pool: {} lots",
                     &id[id.len() - 6..],

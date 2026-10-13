@@ -15,6 +15,11 @@ Query `UsrLotRecords` WHERE:
   by community GUID. Added 2026-09-30. Skipped when the UI's **All lots** switch is on
   (`GET /api/pool?all=true`), added 2026-10-01.
 
+Since 2.1.3 (2026-10-13) the channel list, the three field rules and exclude lists for
+communities / builders (`UsrLot_Community.Account`, read only when builders are listed) /
+job numbers come from `pvwatts_filters.txt` on the I: drive (`src/filters.rs`). The
+defaults are exactly the predicate above.
+
 Validated: 150/2000 have buyer-info; ~85/400 lots are channel=Integrated; full predicate → a real awaiting-consultation set.
 
 ## 1b. "Options" branch — when the lot's committed system size is EMPTY/0

@@ -5,7 +5,8 @@
 //!   sidecar.rs  — sidecar client (PVWatts + parse-assist; the only open-net dep)
 //!   pdf.rs      — per-lot audit PDF (NREL results-page clone) -> I: drive
 //!   csv.rs      — per-lot CSV of every value on that PDF, written beside it
-//!   folders.rs  — which EXISTING folder a lot saves to (saved / template / user pick)
+//!   filters.rs  — lot list filters from pvwatts_filters.txt on the I: drive
+//!   folders.rs  — which EXISTING folder a lot saves to (saved / template / per-lot pick)
 //!   share.rs    — I: drive paths <-> /Volumes/Shares on a Mac
 //!   server.rs   — axum: serves the SPA + JSON API
 //!
@@ -18,6 +19,7 @@ mod calc;
 mod config;
 mod creatio;
 mod csv;
+mod filters;
 mod folders;
 mod pdf;
 mod server;

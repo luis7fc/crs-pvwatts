@@ -1,0 +1,17 @@
+# PVWatts lot list filters
+# Edit, save, then click Refresh in the tool. No new version needed.
+# Lines starting with # are notes and are ignored. Names are not case sensitive.
+# Lists are separated by commas. A setting left out keeps its default.
+
+# Lot channels to show. Use * to show every channel.
+channels = Integrated, Cash Only
+
+# A lot only shows when (yes = check it, no = skip the check):
+require_buyer_info_received = yes
+require_consultation_not_complete = yes
+require_no_kwh_yet = yes
+
+# Hide these. Exact names as they appear in Creatio, separated by commas.
+exclude_communities =
+exclude_builders =
+exclude_jobs =
