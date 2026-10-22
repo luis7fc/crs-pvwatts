@@ -291,7 +291,7 @@ mod version_tests {
 
     #[test]
     fn client_version_is_the_crate_version() {
-        assert_eq!(CLIENT_VERSION, "2.1.3");
+        assert_eq!(CLIENT_VERSION, "2.1.4");
     }
 
     #[tokio::test]

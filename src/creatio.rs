@@ -306,7 +306,7 @@ impl Session {
     /// with rowsOffset ordered by Id. ~100k lots -> ~12s, ~281 pending.
     async fn fetch_pool_in(&self, communities: Option<&HashSet<String>>, filters: &PoolFilters) -> Result<Vec<PoolLot>> {
         const BASE_COLS: &[&str] = &[
-            "Id", "UsrJobNumber", "UsrName", "UsrLotNumberPlusAddress", "UsrZipCode",
+            "Id", "UsrJobNumber", "UsrName", "UsrLotNumberPlusAddress", "UsrLot_Address1", "UsrZipCode",
             "UsrLot_PlanElevation", "UsrLot_Community", "UsrChannel",
             "UsrBuyerInfoReceived", "SMConsultationComplete", "CrsEstAnnualKwhProductionLot",
         ];
@@ -357,7 +357,7 @@ impl Session {
                             lot_id: disp(field(r, "Id")).unwrap_or_default(),
                             job: disp(field(r, "UsrJobNumber")),
                             lot: disp(field(r, "UsrName")),
-                            lot_addr: disp(field(r, "UsrLotNumberPlusAddress")),
+                            lot_addr: lot_addr_of(r),
                             zip: disp(field(r, "UsrZipCode")),
                             plan: disp(field(r, "UsrLot_PlanElevation")),
                             community: disp(field(r, "UsrLot_Community")),
@@ -656,6 +656,19 @@ fn disp(v: &Value) -> Option<String> {
     }
 }
 
+/// "<lot> - <street>". Creatio stopped filling UsrLotNumberPlusAddress on lots
+/// created since ~Sep 2026 (PDFs came out PV_WATTS_UNKNOWN_LOT), so rebuild it in
+/// the same shape from UsrName + UsrLot_Address1 when it is blank.
+fn lot_addr_of(r: &Value) -> Option<String> {
+    disp(field(r, "UsrLotNumberPlusAddress")).or_else(|| {
+        let street = disp(field(r, "UsrLot_Address1"))?;
+        Some(match disp(field(r, "UsrName")) {
+            Some(lot) => format!("{lot} - {street}"),
+            None => street,
+        })
+    })
+}
+
 /// GUID from a lookup value.
 fn guid(v: &Value) -> Option<String> {
     match v {
@@ -708,6 +721,15 @@ mod read_tests {
         assert_eq!(num(&json!(" 97 ")), Some(97.0));
         assert_eq!(int(&json!(" 12")), Some(12));
         assert!(blank(&json!(" 0 ")));
+    }
+
+    #[test]
+    fn lot_addr_falls_back_to_lot_and_street() {
+        let combined = json!({"UsrName": "68", "UsrLotNumberPlusAddress": "68 - 1 Main St", "UsrLot_Address1": "x"});
+        assert_eq!(lot_addr_of(&combined), Some("68 - 1 Main St".into()));
+        let blank = json!({"UsrName": " 48 ", "UsrLotNumberPlusAddress": "", "UsrLot_Address1": " 2 Oak Ave "});
+        assert_eq!(lot_addr_of(&blank), Some("48 - 2 Oak Ave".into()));
+        assert_eq!(lot_addr_of(&json!({"UsrName": "48", "UsrLotNumberPlusAddress": ""})), None);
     }
 
     /// Live, READ-ONLY: the pool as another Buyer Consultant would see it, without
