@@ -438,8 +438,7 @@ impl Session {
 
         let wattage = system
             .as_ref()
-            .and_then(|s| s.panel_model.as_deref())
-            .and_then(calc::wattage_from_model);
+            .and_then(|s| calc::resolve_wattage(s.panel_model.as_deref(), s.size_dc, s.panel_qty));
         let options_lot = match &system {
             None => true,
             Some(s) => s.panel_qty.unwrap_or(0) == 0 && s.size_dc.unwrap_or(0.0) <= 0.0,

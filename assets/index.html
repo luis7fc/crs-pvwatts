@@ -350,6 +350,12 @@ function renderOptions(id){
     return;
   }
   const opts=(res.parsed&&res.parsed.options)||[];
+  // Read the list but nothing matched this plan: don't dead-end, open the kW box.
+  if(!opts.length){
+    manual(`<b>No size in the community's list matched plan ${escapeHtml(b.plan||'?')}.</b> ${unsized}.`,
+      'Find the right size in the list below (or on the layout) and enter the kW DC yourself.');
+    return;
+  }
   const chips=opts.map((o,i)=>`<span class="opt ${S[id].variant===i?'sel':''}" onclick="pickVariant('${id}',${i})">${o.kw_dc} kW${o.panels?(' / '+o.panels+'p'):''} · ${o.label}</span>`).join('') || '<span class="hint">model found no confident match — read the block below</span>';
   const warns=((res.parsed&&res.parsed.warnings)||[]).map(w=>'<div class="hint">⚠ '+w+'</div>').join('');
   const sysline = b.system ? `<div class="hint">Unsized Creatio system: inverter ${b.system.inverter_model||'?'} (eff ${b.inverter_efficiency??'?'}%) · ${b.system.panel_model||'no panel model'}</div>` : '';
